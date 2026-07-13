@@ -1,12 +1,16 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
 
+ROOT="$PREFIX/glibc"
 OUT="$HOME/storage/downloads/box64_execmod_patch_result.txt"
 
-proot-distro login debian -- bash -s <<'DEBIAN' 2>&1 | tee "$OUT"
+proot-distro login debian \
+  --bind "$ROOT:/opt/mobox" \
+  -- bash -s <<'DEBIAN' 2>&1 | tee "$OUT"
 set -euo pipefail
 cd /root/box64
 
+echo "=== RESTORE SOURCE ==="
 git restore src/wrapped/wrappedlibc.c
 cp -f src/wrapped/wrappedlibc.c src/wrapped/wrappedlibc.c.pre_execmod_patch
 
@@ -135,14 +139,19 @@ replacement = r'''EXPORT int my_mprotect(x64emu_t* emu, void *addr, unsigned lon
 
 '''
 
-new_text, count = pattern.subn(replacement, text, count=1)
+# lambda를 사용해야 replacement 안의 C 문자열 \n이 실제 줄바꿈으로 변환되지 않는다.
+new_text, count = pattern.subn(lambda _m: replacement, text, count=1)
 if count != 1:
     raise SystemExit(f"my_mprotect replacement failed: count={count}")
 
 path.write_text(new_text)
-print("PATCHED")
+print("PATCHED_V2")
 PY
 
+echo "=== SOURCE CHECK ==="
+sed -n '3747,3770p' src/wrapped/wrappedlibc.c
+
+echo "=== BUILD ==="
 cmake --build build -j4
 
 cat >/tmp/dirty_execmod_test.c <<'EOF'
@@ -222,11 +231,11 @@ EOF
 x86_64-linux-gnu-gcc -O2 /tmp/dirty_execmod_test.c \
   -o /tmp/dirty_execmod_test_x64
 
-FILETEST=/data/data/com.termux/files/usr/glibc/wine-9.3-vanilla-wow64/lib/wine/x86_64-windows/ntdll.dll
+FILETEST=/opt/mobox/wine-9.3-vanilla-wow64/lib/wine/x86_64-windows/ntdll.dll
 
 export BOX64_NORCFILES=1
 export BOX64_LOG=0
-export BOX64_LD_LIBRARY_PATH="/usr/x86_64-linux-gnu/lib:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/data/data/com.termux/files/usr/glibc/lib/x86_64-linux-gnu"
+export BOX64_LD_LIBRARY_PATH="/usr/x86_64-linux-gnu/lib:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/opt/mobox/lib/x86_64-linux-gnu"
 
 echo
 echo "=== PATCH MARKER ==="
