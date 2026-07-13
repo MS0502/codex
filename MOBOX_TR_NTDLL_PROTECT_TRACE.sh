@@ -57,6 +57,13 @@ export BOX64_LOG=0
 export BOX64_PATH="$WROOT/bin"
 export BOX64_LD_LIBRARY_PATH="$WROOT/lib/wine/x86_64-unix:$WROOT/lib:$WROOT/lib64:/opt/mobox/lib/x86_64-linux-gnu"
 
+# Keep trace runs on the same isolated cache proven by Phase 1F and the
+# full Phase 1 regression. Never read the old default ~/.cache/box64 data.
+export BOX64_DYNACACHE=1
+export BOX64_DYNACACHE_FOLDER=/root/.cache/box64-tr-v4-862fef5
+mkdir -p "$BOX64_DYNACACHE_FOLDER"
+chmod 700 "$BOX64_DYNACACHE_FOLDER"
+
 mkdir -p "$WINEPREFIX/dosdevices"
 ln -sfn /mnt/downloads "$WINEPREFIX/dosdevices/d:"
 
@@ -101,6 +108,8 @@ wait "$SAMPLER" 2>/dev/null
 {
   echo "=== RUN RESULT ==="
   echo "RUN_RESULT=$RUN_RESULT"
+  echo "BOX64_DYNACACHE=$BOX64_DYNACACHE"
+  echo "BOX64_DYNACACHE_FOLDER=$BOX64_DYNACACHE_FOLDER"
   echo
   echo "=== WINE VIRTUAL/SEH TRACE ==="
   cat "$RAW"
@@ -150,12 +159,13 @@ import sys
 lines = Path(sys.argv[1]).read_text(errors='replace').splitlines()
 keep = set()
 patterns = [
-    r'RUN_RESULT=',
+    r'RUN_RESULT=|BOX64_DYNACACHE',
     r'NtProtectVirtualMemory|VirtualProtect|protect|mprotect',
     r'281140|281141|2811b5|ntdll\.dll',
     r'c0000005|EXCEPTION_ACCESS_VIOLATION|140243D68|140243d68',
     r'call_vectored_handlers|info\[[01]\]|rip=',
     r'TALESRUNNER RELEVANT MAPS',
+    r'BOX64_EXECMOD_COW_V4|DynaCache|SIGSEGV|Sigfault/Segbus while quitting',
 ]
 rx = re.compile('|'.join(patterns), re.I)
 for i, line in enumerate(lines):
@@ -176,7 +186,7 @@ PY
 "$BOX" "$WINESERVER" -k >/dev/null 2>&1 || true
 
 echo "=== KEY RESULTS ==="
-grep -Ei 'RUN_RESULT=|NtProtectVirtualMemory|VirtualProtect|281140|281141|c0000005|EXCEPTION_ACCESS_VIOLATION|140243d68|TALESRUNNER RELEVANT MAPS' "$OUT" | tail -n 240 || true
+grep -Ei 'RUN_RESULT=|BOX64_DYNACACHE|NtProtectVirtualMemory|VirtualProtect|281140|281141|c0000005|EXCEPTION_ACCESS_VIOLATION|140243d68|TALESRUNNER RELEVANT MAPS|BOX64_EXECMOD_COW_V4|DynaCache|SIGSEGV' "$OUT" | tail -n 300 || true
 echo
 echo "SANITIZED_LOG=$OUT"
 DEBIAN
