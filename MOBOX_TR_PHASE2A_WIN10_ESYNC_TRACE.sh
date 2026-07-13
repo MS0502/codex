@@ -26,7 +26,8 @@ if [ ! -s "$TOKEN" ]; then
   exit 4
 fi
 
-# Prepare an isolated copy. The working prefix is never modified.
+# Prepare and modify a separate prefix without starting Wine. Starting Wine just
+# to run reg.exe caused Android to kill the helper before the actual game test.
 proot-distro login debian \
   --bind "$ROOT:/opt/mobox" \
   --bind "$DOWNLOADS:/mnt/downloads" \
@@ -35,7 +36,6 @@ set -euo pipefail
 
 BOX=/root/box64/build/box64
 WROOT=/opt/mobox/wine-9.3-vanilla-wow64
-WINE="$WROOT/bin/wine"
 WINESERVER="$WROOT/bin/wineserver"
 BASE=/root/.wine-mobox-execmod
 TEST=/root/.wine-mobox-phase2a-win10-esync
@@ -55,37 +55,47 @@ mkdir -p "$BOX64_DYNACACHE_FOLDER"
 sleep 2
 
 clone_state=existing
-if [ ! -d "$TEST" ]; then
-  clone_state=created
+if [ ! -f "$TEST/user.reg" ] || [ ! -d "$TEST/drive_c" ]; then
+  clone_state=rebuilt
   tmp="${TEST}.tmp.$$"
-  rm -rf "$tmp"
+  rm -rf "$tmp" "$TEST"
   mkdir -p "$tmp"
   cp -a "$BASE"/. "$tmp"/
   mv "$tmp" "$TEST"
 fi
 
-export WINEPREFIX="$TEST"
-export WINEARCH=win64
-export WINEDLLOVERRIDES="winemenubuilder.exe=d"
-export WINEESYNC=1
+python3 - "$TEST/user.reg" <<'PY'
+from pathlib import Path
+import re, sys
 
-# Explicitly match the Winlator container's Windows 10 selection.
-"$BOX" "$WINE" reg add 'HKCU\Software\Wine' /v Version /t REG_SZ /d win10 /f \
-  >/tmp/phase2a_reg_add.txt 2>&1
-reg_rc=$?
+path = Path(sys.argv[1])
+text = path.read_text(errors='replace')
+lines = text.splitlines()
+section_re = re.compile(r'^\[Software\\\\Wine\](?:\s+\d+)?$')
+version_re = re.compile(r'^"Version"=')
 
-"$BOX" "$WINE" reg query 'HKCU\Software\Wine' /v Version \
-  >/tmp/phase2a_reg_query.txt 2>&1 || true
-"$BOX" "$WINE" cmd /c ver >/tmp/phase2a_ver.txt 2>&1 || true
+start = next((i for i, line in enumerate(lines) if section_re.match(line)), None)
+if start is None:
+    if lines and lines[-1] != '':
+        lines.append('')
+    lines.extend(['[Software\\\\Wine]', '"Version"="win10"'])
+else:
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if lines[i].startswith('['):
+            end = i
+            break
+    kept = [line for line in lines[start + 1:end] if not version_re.match(line)]
+    lines[start + 1:end] = ['"Version"="win10"'] + kept
 
-# Probe only. Absence of an esync string means unknown, not unsupported.
-WINEDEBUG=+esync timeout 20s "$BOX" "$WINE" cmd /c exit \
-  >/tmp/phase2a_esync_probe.txt 2>&1 || true
-if grep -qi 'esync' /tmp/phase2a_esync_probe.txt; then
-  esync_trace_seen=1
-else
-  esync_trace_seen=0
-fi
+path.write_text('\n'.join(lines) + '\n')
+PY
+
+version_line="$(grep -A8 -m1 '^\[Software\\\\Wine\]' "$TEST/user.reg" | grep '^"Version"=' | head -1 || true)"
+[ "$version_line" = '"Version"="win10"' ] || {
+  echo "ERROR: offline win10 registry patch verification failed" >&2
+  exit 11
+}
 
 {
   echo "MOBOX TALESRUNNER PHASE 2A META"
@@ -94,21 +104,11 @@ fi
   echo "TEST_PREFIX=$TEST"
   echo "CLONE_STATE=$clone_state"
   echo "BASE_PREFIX_UNMODIFIED=1"
+  echo "WINDOWS_VERSION_PATCH=offline_user_reg"
+  echo "WINDOWS_VERSION_LINE=$version_line"
   echo "WINEESYNC=1"
-  echo "REG_ADD_RC=$reg_rc"
-  echo "ESYNC_TRACE_SEEN=$esync_trace_seen"
-  echo
-  echo "=== REGISTRY VERSION ==="
-  cat /tmp/phase2a_reg_query.txt
-  echo
-  echo "=== CMD VER ==="
-  cat /tmp/phase2a_ver.txt
-  echo
-  echo "=== ESYNC PROBE KEY LINES ==="
-  grep -i 'esync' /tmp/phase2a_esync_probe.txt | head -40 || true
+  echo "PRETEST_WINE_START_SKIPPED=1"
 } >"$META"
-
-"$BOX" "$WINESERVER" -k >/dev/null 2>&1 || true
 DEBIAN
 
 python3 - "$BASE_TRACE" "$GENERATED" <<'PY'
@@ -139,9 +139,9 @@ PY
 chmod +x "$GENERATED"
 bash -n "$GENERATED"
 
-echo "PHASE2A_READY"
+echo "PHASE2A_V2_READY"
 echo "TEST_PREFIX=/root/.wine-mobox-phase2a-win10-esync"
-echo "WINE_VERSION=win10"
+echo "WINE_VERSION=win10_offline"
 echo "WINEESYNC=1"
 
 set +e
