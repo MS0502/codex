@@ -53,6 +53,19 @@ export BOX64_MMAP32=0
 export BOX64_PATH="$WROOT/bin"
 export BOX64_LD_LIBRARY_PATH="$WROOT/lib/wine/x86_64-unix:$WROOT/lib:$WROOT/lib64:/opt/mobox/lib/x86_64-linux-gnu"
 
+# Never reuse the old default cache created by earlier Box64 builds/patches.
+# Phase 1F proved that the default cache crashes on a second fixed-address
+# ntdll mapping, while a fresh isolated folder and DynaCache=0 both pass.
+export BOX64_DYNACACHE=1
+export BOX64_DYNACACHE_FOLDER=/root/.cache/box64-tr-v4-862fef5
+mkdir -p "$BOX64_DYNACACHE_FOLDER"
+chmod 700 "$BOX64_DYNACACHE_FOLDER"
+
+if [ "${MOBOX_LAUNCH_MODE:-test}" = "tr-nocache" ]; then
+  export BOX64_DYNACACHE=0
+  unset BOX64_DYNACACHE_FOLDER
+fi
+
 if [ ! -x "$BOX" ]; then
   echo "ERROR: patched Box64 not found: $BOX" >&2
   exit 5
@@ -77,6 +90,8 @@ TR_BATCH='D:\TR_KR_LOCAL\TR_LOGIN_AND_RUN_FIXED.bat'
 case "${MOBOX_LAUNCH_MODE:-test}" in
   test)
     echo "=== D DRIVE CHECK ==="
+    echo "BOX64_DYNACACHE=$BOX64_DYNACACHE"
+    echo "BOX64_DYNACACHE_FOLDER=${BOX64_DYNACACHE_FOLDER:-disabled}"
     ls -ld "$WINEPREFIX/dosdevices/d:"
     "$BOX" "$WINE" cmd /c dir "$TR_DIR"
     ;;
@@ -91,11 +106,13 @@ case "${MOBOX_LAUNCH_MODE:-test}" in
   cmd)
     exec "$BOX" "$WINE" cmd
     ;;
-  tr)
+  tr|tr-nocache)
     if [ ! -f /mnt/downloads/TR_KR_LOCAL/TR_LOGIN_AND_RUN_FIXED.bat ]; then
       echo "ERROR: TR_LOGIN_AND_RUN_FIXED.bat not found." >&2
       exit 8
     fi
+    echo "BOX64_DYNACACHE=$BOX64_DYNACACHE"
+    echo "BOX64_DYNACACHE_FOLDER=${BOX64_DYNACACHE_FOLDER:-disabled}"
     cd /mnt/downloads/TR_KR_LOCAL
     exec "$BOX" "$WINE" cmd /c "$TR_BATCH"
     ;;
@@ -103,7 +120,7 @@ case "${MOBOX_LAUNCH_MODE:-test}" in
     "$BOX" "$WINESERVER" -k || true
     ;;
   *)
-    echo "Usage: $0 {test|desktop|folder|cmd|tr|stop}" >&2
+    echo "Usage: $0 {test|desktop|folder|cmd|tr|tr-nocache|stop}" >&2
     exit 64
     ;;
 esac
