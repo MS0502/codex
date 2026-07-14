@@ -39,7 +39,7 @@ jobs:
           git clone --depth 1 --branch wine-10.10 https://github.com/wine-mirror/wine.git wine-src
           python3 "$GITHUB_WORKSPACE/tr_wine_compat/apply_wine_10_10_patch.py" "$GITHUB_WORKSPACE/wine-src"
           git -C wine-src diff --check
-          git -C wine-src diff -- dlls/ntdll/unix/security.c dlls/wow64/security.c
+          git -C wine-src diff -- include/winnt.h dlls/ntdll/unix/security.c dlls/wow64/security.c
 
       - name: Configure 64-bit Wine
         run: |
@@ -57,11 +57,14 @@ jobs:
             --without-udev --without-unwind --without-usb --without-v4l2 \
             --without-vulkan --without-wayland --without-x --without-xattr
 
-      - name: Build patched Wine
+      - name: Build patched Wine components
         shell: bash
         run: |
           set -o pipefail
-          make -C build64 -j2 2>&1 | tee build.log
+          make -C build64 -j2 \
+            dlls/ntdll/ntdll.so \
+            dlls/ntdll/ntdll.dll \
+            dlls/wow64/wow64.dll 2>&1 | tee build.log
 
       - name: Collect patched components
         run: |
