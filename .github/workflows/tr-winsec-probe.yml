@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-and-run:
@@ -72,3 +72,21 @@ jobs:
           path: out/*
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish bundle on probe branch
+        if: github.event_name == 'push' && github.ref == 'refs/heads/tr-xign-api-probe'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force downloads | Out-Null
+          $bundle = 'downloads/TR_WINSEC_PROBE_WINDOWS_REFERENCE.zip'
+          if (Test-Path $bundle) { Remove-Item $bundle -Force }
+          Compress-Archive -Path out\* -DestinationPath $bundle -CompressionLevel Optimal
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add $bundle
+          if (git diff --cached --quiet) {
+            Write-Host 'Probe bundle unchanged.'
+          } else {
+            git commit -m 'Publish Windows security API probe bundle'
+            git push origin HEAD:tr-xign-api-probe
+          }
