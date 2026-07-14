@@ -1,0 +1,75 @@
+name: TR Windows Security API Probe
+
+on:
+  push:
+    branches:
+      - tr-xign-api-probe
+    paths:
+      - 'tr_xign_api_probe/**'
+      - '.github/workflows/tr-winsec-probe.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'tr_xign_api_probe/**'
+      - '.github/workflows/tr-winsec-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-run:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2019, windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate Visual Studio
+        id: vs
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $install = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $install) { throw "Visual Studio C++ toolchain not found" }
+          "install=$install" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Build x64
+        shell: cmd
+        run: |
+          call "${{ steps.vs.outputs.install }}\VC\Auxiliary\Build\vcvarsall.bat" x64
+          if not exist out mkdir out
+          cl /nologo /W4 /O2 /MT /D_CRT_SECURE_NO_WARNINGS /Fe:out\TR_WINSEC_PROBE_x64.exe tr_xign_api_probe\tr_winsec_probe.c advapi32.lib
+
+      - name: Build x86
+        shell: cmd
+        run: |
+          call "${{ steps.vs.outputs.install }}\VC\Auxiliary\Build\vcvarsall.bat" x86
+          cl /nologo /W4 /O2 /MT /D_CRT_SECURE_NO_WARNINGS /Fe:out\TR_WINSEC_PROBE_x86.exe tr_xign_api_probe\tr_winsec_probe.c advapi32.lib
+
+      - name: Run probes on native Windows
+        shell: pwsh
+        run: |
+          & .\out\TR_WINSEC_PROBE_x64.exe .\out\windows_reference_${{ matrix.os }}_x64.txt
+          if ($LASTEXITCODE -ne 0) { throw "x64 probe failed: $LASTEXITCODE" }
+          & .\out\TR_WINSEC_PROBE_x86.exe .\out\windows_reference_${{ matrix.os }}_x86.txt
+          if ($LASTEXITCODE -ne 0) { throw "x86 probe failed: $LASTEXITCODE" }
+          Copy-Item .\tr_xign_api_probe\TR_RUN_WINSEC_PROBE.bat .\out\TR_RUN_WINSEC_PROBE.bat -Force
+          Get-FileHash .\out\TR_WINSEC_PROBE_x64.exe -Algorithm SHA256 | Format-List | Out-File .\out\sha256.txt
+          Get-FileHash .\out\TR_WINSEC_PROBE_x86.exe -Algorithm SHA256 | Format-List | Out-File .\out\sha256.txt -Append
+          Get-Content .\out\windows_reference_${{ matrix.os }}_x64.txt
+          Get-Content .\out\windows_reference_${{ matrix.os }}_x86.txt
+
+      - name: Upload probe and reference output
+        uses: actions/upload-artifact@v4
+        with:
+          name: TR_WINSEC_PROBE_${{ matrix.os }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 30
