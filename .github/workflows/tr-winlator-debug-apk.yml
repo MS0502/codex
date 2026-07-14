@@ -79,6 +79,11 @@ jobs:
 
           replace('app/build.gradle', "applicationId 'com.winlator'", "applicationId 'com.winlator.trcompat'")
           replace('app/build.gradle', 'versionName "11.1"', 'versionName "11.1-trcompat"')
+          replace(
+              'app/build.gradle',
+              'android {\n    compileSdk 34\n',
+              "android {\n    compileSdk 34\n\n    packagingOptions {\n        pickFirst 'lib/arm64-v8a/libFLAC.so'\n    }\n",
+          )
           replace('app/src/main/AndroidManifest.xml', 'android:authorities="com.winlator.FileProvider"', 'android:authorities="com.winlator.trcompat.FileProvider"')
           replace('app/src/main/java/com/winlator/MainActivity.java', 'public static final boolean DEBUG_MODE = false;', 'public static final boolean DEBUG_MODE = true;')
 
@@ -88,6 +93,7 @@ jobs:
           strings.write_text(text, encoding='utf-8')
           PY
           grep -R "applicationId 'com.winlator.trcompat'" -n winlator-app/app/build.gradle
+          grep -R "pickFirst 'lib/arm64-v8a/libFLAC.so'" -n winlator-app/app/build.gradle
           grep -R 'DEBUG_MODE = true' -n winlator-app/app/src/main/java/com/winlator/MainActivity.java
           grep -R 'com.winlator.trcompat.FileProvider' -n winlator-app/app/src/main/AndroidManifest.xml
 
