@@ -1,3 +1,15 @@
+diff --git a/include/winnt.h b/include/winnt.h
+index e776312f922..00000000000 100644
+--- a/include/winnt.h
++++ b/include/winnt.h
+@@ -4239,6 +4239,7 @@ typedef enum _TOKEN_INFORMATION_CLASS {
+   TokenSecurityAttributes,
+   TokenIsRestricted,
+   TokenProcessTrustLevel,
++  TokenPrivateNameSpace,
+   MaxTokenInfoClass
+ } TOKEN_INFORMATION_CLASS;
+ 
 diff --git a/dlls/ntdll/unix/security.c b/dlls/ntdll/unix/security.c
 index 84e71154585..00000000000 100644
 --- a/dlls/ntdll/unix/security.c
