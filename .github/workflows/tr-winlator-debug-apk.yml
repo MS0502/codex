@@ -33,9 +33,20 @@ jobs:
           java-version: '17'
 
       - name: Install Android SDK components
+        shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager 'platforms;android-34' 'build-tools;34.0.0' 'cmake;3.22.1' 'ndk;24.0.8215888'
+          set -e
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" \
+            'platforms;android-34' \
+            'build-tools;34.0.0' \
+            'cmake;3.22.1' \
+            'ndk;24.0.8215888'
 
       - name: Set up Java 11 for Android Gradle Plugin
         uses: actions/setup-java@v4
