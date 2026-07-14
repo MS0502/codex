@@ -63,19 +63,17 @@ jobs:
           set -o pipefail
           make -C build64 -j2 \
             dlls/ntdll/ntdll.so \
-            dlls/ntdll/ntdll.dll \
-            dlls/wow64/wow64.dll 2>&1 | tee build.log
+            dlls/ntdll/x86_64-windows/ntdll.dll \
+            dlls/wow64/x86_64-windows/wow64.dll 2>&1 | tee build.log
 
       - name: Collect patched components
         run: |
-          mkdir -p out
-          find build64/dlls/ntdll build64/dlls/wow64 -maxdepth 2 -type f \
-            \( -name 'ntdll.so' -o -name 'ntdll.dll' -o -name 'wow64.dll' \) \
-            -print -exec cp -v '{}' out/ \;
-          test -n "$(find out -maxdepth 1 -type f -name 'ntdll*' -print -quit)"
-          test -n "$(find out -maxdepth 1 -type f -name 'wow64.dll' -print -quit)"
-          sha256sum out/* | tee out/SHA256SUMS.txt
+          mkdir -p out/lib/wine/x86_64-unix out/lib/wine/x86_64-windows
+          cp -v build64/dlls/ntdll/ntdll.so out/lib/wine/x86_64-unix/ntdll.so
+          cp -v build64/dlls/ntdll/x86_64-windows/ntdll.dll out/lib/wine/x86_64-windows/ntdll.dll
+          cp -v build64/dlls/wow64/x86_64-windows/wow64.dll out/lib/wine/x86_64-windows/wow64.dll
           cp tr_wine_compat/wine-10.10-token-private-namespace.patch out/
+          find out -type f -print0 | sort -z | xargs -0 sha256sum | tee out/SHA256SUMS.txt
 
       - name: Upload build log
         if: always()
@@ -90,6 +88,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: TR_WINE_10_10_TOKEN_NAMESPACE_COMPONENTS
-          path: out/*
+          path: out/**
           if-no-files-found: error
           retention-days: 30
