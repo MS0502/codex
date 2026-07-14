@@ -17,9 +17,15 @@ def main() -> int:
         return 2
 
     root = Path(sys.argv[1]).resolve()
+    winnt = root / "include/winnt.h"
     native = root / "dlls/ntdll/unix/security.c"
     wow64 = root / "dlls/wow64/security.c"
 
+    replace_once(
+        winnt,
+        "  TokenIsRestricted,\n  TokenProcessTrustLevel,\n  MaxTokenInfoClass\n",
+        "  TokenIsRestricted,\n  TokenProcessTrustLevel,\n  TokenPrivateNameSpace,\n  MaxTokenInfoClass\n",
+    )
     replace_once(
         native,
         "        0,    /* TokenIsRestricted */\n        0     /* TokenProcessTrustLevel */\n",
