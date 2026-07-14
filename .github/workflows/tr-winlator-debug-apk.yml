@@ -26,16 +26,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Java 11
+      - name: Set up Java 17 for sdkmanager
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '11'
+          java-version: '17'
 
       - name: Install Android SDK components
         run: |
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager 'platforms;android-34' 'build-tools;34.0.0' 'cmake;3.22.1' 'ndk;24.0.8215888'
+
+      - name: Set up Java 11 for Android Gradle Plugin
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
 
       - name: Fetch official Winlator 11.1 app source
         run: |
