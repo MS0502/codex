@@ -57,10 +57,11 @@ jobs:
             --without-udev --without-unwind --without-usb --without-v4l2 \
             --without-vulkan --without-wayland --without-x --without-xattr
 
-      - name: Build patched 64-bit components
+      - name: Build patched Wine
+        shell: bash
         run: |
-          make -C build64/dlls/ntdll -j2
-          make -C build64/dlls/wow64 -j2
+          set -o pipefail
+          make -C build64 -j2 2>&1 | tee build.log
 
       - name: Collect patched components
         run: |
@@ -73,7 +74,17 @@ jobs:
           sha256sum out/* | tee out/SHA256SUMS.txt
           cp tr_wine_compat/wine-10.10-token-private-namespace.patch out/
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TR_WINE_10_10_BUILD_LOG
+          path: build.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload patched components
+        uses: actions/upload-artifact@v4
         with:
           name: TR_WINE_10_10_TOKEN_NAMESPACE_COMPONENTS
           path: out/*
