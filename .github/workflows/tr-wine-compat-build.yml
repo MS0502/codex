@@ -37,8 +37,7 @@ jobs:
       - name: Fetch Wine 10.10 and apply patch
         run: |
           git clone --depth 1 --branch wine-10.10 https://github.com/wine-mirror/wine.git wine-src
-          git -C wine-src apply --check "$GITHUB_WORKSPACE/tr_wine_compat/wine-10.10-token-private-namespace.patch"
-          git -C wine-src apply "$GITHUB_WORKSPACE/tr_wine_compat/wine-10.10-token-private-namespace.patch"
+          python3 "$GITHUB_WORKSPACE/tr_wine_compat/apply_wine_10_10_patch.py" "$GITHUB_WORKSPACE/wine-src"
           git -C wine-src diff --check
           git -C wine-src diff -- dlls/ntdll/unix/security.c dlls/wow64/security.c
 
