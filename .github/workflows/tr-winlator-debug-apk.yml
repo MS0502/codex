@@ -7,6 +7,12 @@ on:
     paths:
       - '.github/workflows/tr-winlator-debug-apk.yml'
       - 'tr_winlator_apk/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/tr-winlator-debug-apk.yml'
+      - 'tr_winlator_apk/**'
   workflow_dispatch:
 
 permissions:
