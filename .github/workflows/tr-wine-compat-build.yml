@@ -7,6 +7,12 @@ on:
     paths:
       - 'tr_wine_compat/**'
       - '.github/workflows/tr-wine-compat-build.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'tr_wine_compat/**'
+      - '.github/workflows/tr-wine-compat-build.yml'
   workflow_dispatch:
 
 permissions:
