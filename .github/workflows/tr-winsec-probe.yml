@@ -56,6 +56,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "x64 probe failed: $LASTEXITCODE" }
           & .\out\TR_WINSEC_PROBE_x86.exe .\out\windows_reference_x86.txt
           if ($LASTEXITCODE -ne 0) { throw "x86 probe failed: $LASTEXITCODE" }
+          Copy-Item .\tr_xign_api_probe\TR_RUN_WINSEC_PROBE.bat .\out\TR_RUN_WINSEC_PROBE.bat -Force
           Get-FileHash .\out\TR_WINSEC_PROBE_x64.exe -Algorithm SHA256 | Format-List | Out-File .\out\sha256.txt
           Get-FileHash .\out\TR_WINSEC_PROBE_x86.exe -Algorithm SHA256 | Format-List | Out-File .\out\sha256.txt -Append
           "=== x64 ==="
