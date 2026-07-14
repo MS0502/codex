@@ -7,6 +7,12 @@ on:
     paths:
       - 'tr_xign_api_probe/**'
       - '.github/workflows/tr-winsec-probe.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'tr_xign_api_probe/**'
+      - '.github/workflows/tr-winsec-probe.yml'
   workflow_dispatch:
 
 permissions:
