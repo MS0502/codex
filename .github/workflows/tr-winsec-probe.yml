@@ -16,11 +16,15 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-and-run:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2019, windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
 
     steps:
@@ -52,42 +56,20 @@ jobs:
       - name: Run probes on native Windows
         shell: pwsh
         run: |
-          & .\out\TR_WINSEC_PROBE_x64.exe .\out\windows_reference_x64.txt
+          & .\out\TR_WINSEC_PROBE_x64.exe .\out\windows_reference_${{ matrix.os }}_x64.txt
           if ($LASTEXITCODE -ne 0) { throw "x64 probe failed: $LASTEXITCODE" }
-          & .\out\TR_WINSEC_PROBE_x86.exe .\out\windows_reference_x86.txt
+          & .\out\TR_WINSEC_PROBE_x86.exe .\out\windows_reference_${{ matrix.os }}_x86.txt
           if ($LASTEXITCODE -ne 0) { throw "x86 probe failed: $LASTEXITCODE" }
           Copy-Item .\tr_xign_api_probe\TR_RUN_WINSEC_PROBE.bat .\out\TR_RUN_WINSEC_PROBE.bat -Force
           Get-FileHash .\out\TR_WINSEC_PROBE_x64.exe -Algorithm SHA256 | Format-List | Out-File .\out\sha256.txt
           Get-FileHash .\out\TR_WINSEC_PROBE_x86.exe -Algorithm SHA256 | Format-List | Out-File .\out\sha256.txt -Append
-          "=== x64 ==="
-          Get-Content .\out\windows_reference_x64.txt
-          "=== x86 ==="
-          Get-Content .\out\windows_reference_x86.txt
-          "=== SHA256 ==="
-          Get-Content .\out\sha256.txt
+          Get-Content .\out\windows_reference_${{ matrix.os }}_x64.txt
+          Get-Content .\out\windows_reference_${{ matrix.os }}_x86.txt
 
       - name: Upload probe and reference output
         uses: actions/upload-artifact@v4
         with:
-          name: TR_WINSEC_PROBE_WINDOWS_REFERENCE
+          name: TR_WINSEC_PROBE_${{ matrix.os }}
           path: out/*
           if-no-files-found: error
           retention-days: 30
-
-      - name: Publish bundle on probe branch
-        if: github.event_name == 'push' && github.ref == 'refs/heads/tr-xign-api-probe'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force downloads | Out-Null
-          $bundle = 'downloads/TR_WINSEC_PROBE_WINDOWS_REFERENCE.zip'
-          if (Test-Path $bundle) { Remove-Item $bundle -Force }
-          Compress-Archive -Path out\* -DestinationPath $bundle -CompressionLevel Optimal
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add $bundle
-          if (git diff --cached --quiet) {
-            Write-Host 'Probe bundle unchanged.'
-          } else {
-            git commit -m 'Publish Windows security API probe bundle'
-            git push origin HEAD:tr-xign-api-probe
-          }
