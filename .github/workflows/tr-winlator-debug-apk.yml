@@ -78,7 +78,7 @@ jobs:
               p.write_text(text.replace(old, new, 1), encoding='utf-8')
 
           replace('app/build.gradle', "applicationId 'com.winlator'", "applicationId 'com.winlator.trcompat'")
-          replace('app/build.gradle', 'versionName "11.1"', 'versionName "11.1-trcompat3"')
+          replace('app/build.gradle', 'versionName "11.1"', 'versionName "11.1-trcompat4"')
           replace(
               'app/build.gradle',
               'android {\n    compileSdk 34\n',
@@ -86,6 +86,15 @@ jobs:
           )
           replace('app/src/main/AndroidManifest.xml', 'android:authorities="com.winlator.FileProvider"', 'android:authorities="com.winlator.trcompat.FileProvider"')
           replace('app/src/main/java/com/winlator/MainActivity.java', 'public static final boolean DEBUG_MODE = false;', 'public static final boolean DEBUG_MODE = true;')
+
+          # Allow named imported Wine subversions such as "trcompat". The stock
+          # parser accepts only numeric subversions, causing the installed runtime
+          # to be displayed and treated as the built-in Wine 10.10 (Custom).
+          replace(
+              'app/src/main/java/com/winlator/core/WineInfo.java',
+              'private static final Pattern pattern = Pattern.compile("^wine\\\\-([0-9\\\\.]+)\\\\-?([0-9\\\\.]+)?\\\\-?(x86|x86_64)?$");',
+              'private static final Pattern pattern = Pattern.compile("^wine\\\\-([0-9\\\\.]+)(?:\\\\-([A-Za-z0-9._]+))?(?:\\\\-(x86|x86_64))?$");',
+          )
 
           # Skip the stock `wine --version` probe. The archive/layout/ELF checks
           # still run before this callback and the package is assigned a unique id.
@@ -132,6 +141,7 @@ jobs:
           grep -R "pickFirst 'lib/arm64-v8a/\*.so'" -n winlator-app/app/build.gradle
           grep -R 'DEBUG_MODE = true' -n winlator-app/app/src/main/java/com/winlator/MainActivity.java
           grep -R 'com.winlator.trcompat.FileProvider' -n winlator-app/app/src/main/AndroidManifest.xml
+          grep -R 'A-Za-z0-9._' -n winlator-app/app/src/main/java/com/winlator/core/WineInfo.java
           grep -R 'new WineInfo("10.10", "trcompat"' -n winlator-app/app/src/main/java/com/winlator/core/WineInstaller.java
           grep -R 'container_pattern.tzst' -n winlator-app/app/src/main/java/com/winlator/SettingsFragment.java
           grep -R 'importedWineRoot' -n winlator-app/app/src/main/java/com/winlator/container/ContainerManager.java
@@ -156,8 +166,8 @@ jobs:
       - name: Collect APK
         run: |
           mkdir -p out
-          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk out/Winlator_11.1_TR_Compat_v3.apk
-          sha256sum out/Winlator_11.1_TR_Compat_v3.apk | tee out/SHA256SUMS.txt
+          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk out/Winlator_11.1_TR_Compat_v4.apk
+          sha256sum out/Winlator_11.1_TR_Compat_v4.apk | tee out/SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
