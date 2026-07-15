@@ -78,7 +78,7 @@ jobs:
               p.write_text(text.replace(old, new, 1), encoding='utf-8')
 
           replace('app/build.gradle', "applicationId 'com.winlator'", "applicationId 'com.winlator.trcompat'")
-          replace('app/build.gradle', 'versionName "11.1"', 'versionName "11.1-trcompat2"')
+          replace('app/build.gradle', 'versionName "11.1"', 'versionName "11.1-trcompat3"')
           replace(
               'app/build.gradle',
               'android {\n    compileSdk 34\n',
@@ -87,15 +87,40 @@ jobs:
           replace('app/src/main/AndroidManifest.xml', 'android:authorities="com.winlator.FileProvider"', 'android:authorities="com.winlator.trcompat.FileProvider"')
           replace('app/src/main/java/com/winlator/MainActivity.java', 'public static final boolean DEBUG_MODE = false;', 'public static final boolean DEBUG_MODE = true;')
 
-          # The stock hidden Wine installer launches the imported Wine just to run
-          # `wine --version`. On this Android build that probe can remain alive
-          # indefinitely, leaving the UI at "Preparing installation...". This APK
-          # accepts only our known 10.10 TR compatibility package after the normal
-          # archive/layout/ELF checks and assigns it a unique installed identifier.
+          # Skip the stock `wine --version` probe. The archive/layout/ELF checks
+          # still run before this callback and the package is assigned a unique id.
           replace(
               'app/src/main/java/com/winlator/core/WineInstaller.java',
               '''        RootFS rootFS = RootFS.find(context);\n        File rootDir = rootFS.getRootDir();\n        String wineBinPath = wineBin64.isFile() ? wineBin64.getPath() : wineBin.getPath();\n        final String winePath = wineDir.getPath();\n\n        final AtomicReference<WineInfo> wineInfoRef = new AtomicReference<>();\n        Callback<String> debugCallback = (line) -> {\n            Pattern pattern = Pattern.compile("^wine\\\\-([0-9\\\\.]+)\\\\-?([0-9\\\\.]+)?", Pattern.CASE_INSENSITIVE);\n            Matcher matcher = pattern.matcher(line);\n            if (matcher.find()) {\n                String version = matcher.group(1);\n                String subversion = matcher.groupCount() >= 2 ? matcher.group(2) : null;\n                wineInfoRef.set(new WineInfo(version, subversion, winePath));\n            }\n        };\n\n        ProcessHelper.addDebugCallback(debugCallback);\n\n        File linkFile = new File(rootDir, RootFS.HOME_PATH);\n        linkFile.delete();\n        FileUtils.symlink(wineDir, linkFile);\n\n        XEnvironment environment = new XEnvironment(context, rootFS);\n        GuestProgramLauncherComponent guestProgramLauncherComponent = new GuestProgramLauncherComponent();\n        guestProgramLauncherComponent.setGuestExecutable(wineBinPath+" --version");\n        guestProgramLauncherComponent.setTerminationCallback((status) -> {\n            callback.call(wineInfoRef.get());\n            ProcessHelper.removeDebugCallback(debugCallback);\n        });\n        environment.addComponent(guestProgramLauncherComponent);\n        environment.startEnvironmentComponents();\n''',
               '''        callback.call(new WineInfo("10.10", "trcompat", wineDir.getPath()));\n''',
+          )
+
+          # Do not launch winecfg while installing this same-version compatibility
+          # build. Reuse the stock Wine 10.10 prefix template, install the imported
+          # runtime atomically, and restart back into Settings.
+          replace(
+              'app/src/main/java/com/winlator/SettingsFragment.java',
+              '''    private void installWine(final WineInfo wineInfo) {\n        Context context = getContext();\n        File installedWineDir = RootFS.find(context).getInstalledWineDir();\n\n        File wineDir = new File(installedWineDir, wineInfo.identifier());\n        if (wineDir.isDirectory()) {\n            AppUtils.showToast(context, R.string.unable_to_install_wine);\n            return;\n        }\n\n        Intent intent = new Intent(context, XServerDisplayActivity.class);\n        intent.putExtra("generate_wineprefix", true);\n        intent.putExtra("wine_info", wineInfo);\n        context.startActivity(intent);\n    }\n''',
+              '''    private void installWine(final WineInfo wineInfo) {\n        final Context context = getContext();\n        final File installedWineDir = RootFS.find(context).getInstalledWineDir();\n        final File sourceWineDir = new File(wineInfo.path);\n        final File targetWineDir = new File(installedWineDir, wineInfo.identifier());\n        final File patternFile = new File(installedWineDir, "container-pattern-"+wineInfo.fullVersion()+".tzst");\n\n        if (targetWineDir.exists() || patternFile.exists() || !sourceWineDir.isDirectory()) {\n            AppUtils.showToast(context, R.string.unable_to_install_wine);\n            return;\n        }\n\n        preloaderDialog.show(R.string.finishing_installation);\n        Executors.newSingleThreadExecutor().execute(() -> {\n            boolean wineReady = sourceWineDir.renameTo(targetWineDir);\n            if (!wineReady) wineReady = FileUtils.copy(sourceWineDir, targetWineDir);\n\n            FileUtils.copy(context, "container_pattern.tzst", patternFile);\n            boolean patternReady = patternFile.isFile() && patternFile.length() > 0;\n            FileUtils.delete(new File(installedWineDir, "preinstall"));\n\n            if (!wineReady || !patternReady) {\n                FileUtils.delete(targetWineDir);\n                FileUtils.delete(patternFile);\n                preloaderDialog.closeOnUiThread();\n                AppUtils.showToast(context, R.string.unable_to_install_wine);\n                return;\n            }\n\n            preloaderDialog.closeOnUiThread();\n            AppUtils.RestartApplicationOptions options = new AppUtils.RestartApplicationOptions();\n            options.selectedMenuItemId = R.id.menu_item_settings;\n            AppUtils.restartApplication((Activity)context, options);\n        });\n    }\n''',
+          )
+
+          # The stock prefix template omits common Wine DLLs. For an imported
+          # Wine runtime, repopulate them from that runtime rather than /opt/wine,
+          # so the patched wow64.dll is copied into the new container.
+          replace(
+              'app/src/main/java/com/winlator/container/ContainerManager.java',
+              '''    private void copyCommonDlls(String srcName, String dstName, JSONObject commonDlls, File containerDir) throws JSONException {\n        File srcDir = new File(RootFS.find(context).getRootDir(), "/opt/wine/lib/wine/"+srcName);\n        JSONArray dlnames = commonDlls.getJSONArray(dstName);\n''',
+              '''    private void copyCommonDlls(File wineRoot, String srcName, String dstName, JSONObject commonDlls, File containerDir) throws JSONException {\n        File srcDir = new File(wineRoot, "lib/wine/"+srcName);\n        JSONArray dlnames = commonDlls.getJSONArray(dstName);\n''',
+          )
+          replace(
+              'app/src/main/java/com/winlator/container/ContainerManager.java',
+              '''                    JSONObject commonDlls = new JSONObject(FileUtils.readString(context, "common_dlls.json"));\n                    copyCommonDlls("x86_64-windows", "system32", commonDlls, containerDir);\n                    copyCommonDlls("i386-windows", "syswow64", commonDlls, containerDir);\n''',
+              '''                    JSONObject commonDlls = new JSONObject(FileUtils.readString(context, "common_dlls.json"));\n                    File mainWineRoot = new File(RootFS.find(context).getRootDir(), "/opt/wine");\n                    copyCommonDlls(mainWineRoot, "x86_64-windows", "system32", commonDlls, containerDir);\n                    copyCommonDlls(mainWineRoot, "i386-windows", "syswow64", commonDlls, containerDir);\n''',
+          )
+          replace(
+              'app/src/main/java/com/winlator/container/ContainerManager.java',
+              '''            WineInfo wineInfo = WineInfo.fromIdentifier(context, wineVersion);\n            File file = new File(installedWineDir, "container-pattern-"+wineInfo.fullVersion()+".tzst");\n            return TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, file, containerDir);\n''',
+              '''            WineInfo wineInfo = WineInfo.fromIdentifier(context, wineVersion);\n            File file = new File(installedWineDir, "container-pattern-"+wineInfo.fullVersion()+".tzst");\n            boolean result = TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, file, containerDir);\n\n            if (result) {\n                try {\n                    JSONObject commonDlls = new JSONObject(FileUtils.readString(context, "common_dlls.json"));\n                    File importedWineRoot = new File(wineInfo.path);\n                    copyCommonDlls(importedWineRoot, "x86_64-windows", "system32", commonDlls, containerDir);\n                    copyCommonDlls(importedWineRoot, "i386-windows", "syswow64", commonDlls, containerDir);\n                }\n                catch (JSONException e) {\n                    return false;\n                }\n            }\n\n            return result;\n''',
           )
 
           strings = root / 'app/src/main/res/values/strings.xml'
@@ -108,6 +133,8 @@ jobs:
           grep -R 'DEBUG_MODE = true' -n winlator-app/app/src/main/java/com/winlator/MainActivity.java
           grep -R 'com.winlator.trcompat.FileProvider' -n winlator-app/app/src/main/AndroidManifest.xml
           grep -R 'new WineInfo("10.10", "trcompat"' -n winlator-app/app/src/main/java/com/winlator/core/WineInstaller.java
+          grep -R 'container_pattern.tzst' -n winlator-app/app/src/main/java/com/winlator/SettingsFragment.java
+          grep -R 'importedWineRoot' -n winlator-app/app/src/main/java/com/winlator/container/ContainerManager.java
 
       - name: Build debug APK
         working-directory: winlator-app
@@ -129,8 +156,8 @@ jobs:
       - name: Collect APK
         run: |
           mkdir -p out
-          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk out/Winlator_11.1_TR_Compat_v2.apk
-          sha256sum out/Winlator_11.1_TR_Compat_v2.apk | tee out/SHA256SUMS.txt
+          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk out/Winlator_11.1_TR_Compat_v3.apk
+          sha256sum out/Winlator_11.1_TR_Compat_v3.apk | tee out/SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
