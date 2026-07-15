@@ -1,0 +1,147 @@
+name: TR Winlator compatibility APK v6
+
+on:
+  push:
+    branches:
+      - tr-wine-compat-patch
+    paths:
+      - '.github/workflows/tr-winlator-debug-apk-v6.yml'
+      - 'tr_winlator_apk/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tr-winlator-v6-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-apk-v6:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 17 for sdkmanager
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" \
+            'platforms;android-34' \
+            'build-tools;34.0.0' \
+            'cmake;3.22.1' \
+            'ndk;24.0.8215888'
+
+      - name: Set up Java 11 for Android Gradle Plugin
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Fetch official Winlator 11.1 app source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init winlator-app
+          git -C winlator-app remote add origin https://github.com/brunodev85/winlator-app.git
+          git -C winlator-app fetch --depth 1 origin c2f4ad4534f4637b543a9a3b085e28f50cf6d01c
+          git -C winlator-app checkout --detach FETCH_HEAD
+          test "$(git -C winlator-app rev-parse HEAD)" = 'c2f4ad4534f4637b543a9a3b085e28f50cf6d01c'
+          git -C winlator-app lfs pull || true
+
+      - name: Apply TR Compat v6 diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tr_winlator_apk/apply_v6_patch.py winlator-app
+          grep -R 'versionName "11.1-trcompat6"' -n winlator-app/app/build.gradle
+          grep -R 'TR_DIAG_v6.zip' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatDiagnostics.java
+          grep -R 'PROCESS_EXCEPTION' -n winlator-app/app/src/main/java/com/winlator/core/ProcessHelper.java
+          grep -R 'GUEST_EXEC_ENTER' -n winlator-app/app/src/main/java/com/winlator/xenvironment/components/GuestProgramLauncherComponent.java
+          grep -R 'WATCHDOG_TIMEOUT' -n winlator-app/app/src/main/java/com/winlator/XServerDisplayActivity.java
+
+      - name: Restore persistent TR Compat debug signing key
+        id: debug-key-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: trcompat-debug-keystore-v1
+
+      - name: Create persistent TR Compat debug signing key
+        if: steps.debug-key-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair \
+            -keystore "$HOME/.android/debug.keystore" \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -dname 'CN=Android Debug,O=Android,C=US' \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -noprompt
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Build v6 debug APK
+        working-directory: winlator-app
+        shell: bash
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee ../apk-build-v6.log
+
+      - name: Upload v6 APK build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V6_BUILD_LOG
+          path: apk-build-v6.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Collect v6 APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out-v6
+          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk out-v6/Winlator_11.1_TR_Compat_v6.apk
+          sha256sum out-v6/Winlator_11.1_TR_Compat_v6.apk | tee out-v6/SHA256SUMS.txt
+          cat > out-v6/README_KO.txt <<'EOF'
+          Winlator TR Compat v6 진단 빌드
+
+          출력 파일:
+          /storage/emulated/0/Documents/Winlator/TR_DIAG_v6.zip
+
+          ZIP 내용:
+          - startup_trace.txt
+          - xign_fingerprint.txt
+
+          v6는 Box64/Wine 실행 명령, 경로, 권한, PID, stdout/stderr,
+          ProcessBuilder 예외와 한국 테일즈런너 XIGNCODE 파일 지문을 기록한다.
+          게임 또는 XIGNCODE 파일은 수정하지 않는다.
+          EOF
+
+      - name: Upload v6 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V6
+          path: out-v6/*
+          if-no-files-found: error
+          retention-days: 30
