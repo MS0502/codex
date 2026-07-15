@@ -78,7 +78,7 @@ jobs:
               p.write_text(text.replace(old, new, 1), encoding='utf-8')
 
           replace('app/build.gradle', "applicationId 'com.winlator'", "applicationId 'com.winlator.trcompat'")
-          replace('app/build.gradle', 'versionName "11.1"', 'versionName "11.1-trcompat"')
+          replace('app/build.gradle', 'versionName "11.1"', 'versionName "11.1-trcompat2"')
           replace(
               'app/build.gradle',
               'android {\n    compileSdk 34\n',
@@ -86,6 +86,17 @@ jobs:
           )
           replace('app/src/main/AndroidManifest.xml', 'android:authorities="com.winlator.FileProvider"', 'android:authorities="com.winlator.trcompat.FileProvider"')
           replace('app/src/main/java/com/winlator/MainActivity.java', 'public static final boolean DEBUG_MODE = false;', 'public static final boolean DEBUG_MODE = true;')
+
+          # The stock hidden Wine installer launches the imported Wine just to run
+          # `wine --version`. On this Android build that probe can remain alive
+          # indefinitely, leaving the UI at "Preparing installation...". This APK
+          # accepts only our known 10.10 TR compatibility package after the normal
+          # archive/layout/ELF checks and assigns it a unique installed identifier.
+          replace(
+              'app/src/main/java/com/winlator/core/WineInstaller.java',
+              '''        RootFS rootFS = RootFS.find(context);\n        File rootDir = rootFS.getRootDir();\n        String wineBinPath = wineBin64.isFile() ? wineBin64.getPath() : wineBin.getPath();\n        final String winePath = wineDir.getPath();\n\n        final AtomicReference<WineInfo> wineInfoRef = new AtomicReference<>();\n        Callback<String> debugCallback = (line) -> {\n            Pattern pattern = Pattern.compile("^wine\\\\-([0-9\\\\.]+)\\\\-?([0-9\\\\.]+)?", Pattern.CASE_INSENSITIVE);\n            Matcher matcher = pattern.matcher(line);\n            if (matcher.find()) {\n                String version = matcher.group(1);\n                String subversion = matcher.groupCount() >= 2 ? matcher.group(2) : null;\n                wineInfoRef.set(new WineInfo(version, subversion, winePath));\n            }\n        };\n\n        ProcessHelper.addDebugCallback(debugCallback);\n\n        File linkFile = new File(rootDir, RootFS.HOME_PATH);\n        linkFile.delete();\n        FileUtils.symlink(wineDir, linkFile);\n\n        XEnvironment environment = new XEnvironment(context, rootFS);\n        GuestProgramLauncherComponent guestProgramLauncherComponent = new GuestProgramLauncherComponent();\n        guestProgramLauncherComponent.setGuestExecutable(wineBinPath+" --version");\n        guestProgramLauncherComponent.setTerminationCallback((status) -> {\n            callback.call(wineInfoRef.get());\n            ProcessHelper.removeDebugCallback(debugCallback);\n        });\n        environment.addComponent(guestProgramLauncherComponent);\n        environment.startEnvironmentComponents();\n''',
+              '''        callback.call(new WineInfo("10.10", "trcompat", wineDir.getPath()));\n''',
+          )
 
           strings = root / 'app/src/main/res/values/strings.xml'
           text = strings.read_text(encoding='utf-8')
@@ -96,6 +107,7 @@ jobs:
           grep -R "pickFirst 'lib/arm64-v8a/\*.so'" -n winlator-app/app/build.gradle
           grep -R 'DEBUG_MODE = true' -n winlator-app/app/src/main/java/com/winlator/MainActivity.java
           grep -R 'com.winlator.trcompat.FileProvider' -n winlator-app/app/src/main/AndroidManifest.xml
+          grep -R 'new WineInfo("10.10", "trcompat"' -n winlator-app/app/src/main/java/com/winlator/core/WineInstaller.java
 
       - name: Build debug APK
         working-directory: winlator-app
@@ -117,8 +129,8 @@ jobs:
       - name: Collect APK
         run: |
           mkdir -p out
-          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk out/Winlator_11.1_TR_Compat.apk
-          sha256sum out/Winlator_11.1_TR_Compat.apk | tee out/SHA256SUMS.txt
+          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk out/Winlator_11.1_TR_Compat_v2.apk
+          sha256sum out/Winlator_11.1_TR_Compat_v2.apk | tee out/SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
