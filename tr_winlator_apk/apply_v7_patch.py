@@ -30,7 +30,6 @@ def patch_versions(root: Path) -> None:
     text = diag.read_text(encoding="utf-8")
     replacements = {
         'TR_DIAG_v6.zip': 'TR_DIAG_v7.zip',
-        'TR_DIAG_v6.zip.tmp': 'TR_DIAG_v7.zip.tmp',
         'DIAGNOSTICS_RESET version=6': 'DIAGNOSTICS_RESET version=7',
         'TalesRunner KR XIGNCODE fingerprint v6': 'TalesRunner KR XIGNCODE fingerprint v7',
     }
