@@ -1,0 +1,189 @@
+name: TR Winlator compatibility APK v13 XIGN diagnostics
+
+on:
+  push:
+    branches: [tr-wine-compat-xign-diagnostics-v13]
+  pull_request:
+    branches: [tr-wine-compat-baseline-v12]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tr-winlator-v13-xign-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-apk-v13-xign:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            python3 git git-lfs ca-certificates unzip zstd patchelf file
+
+      - name: Set up Java 17 for sdkmanager
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK components
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platforms;android-34' 'build-tools;34.0.0' \
+            'cmake;3.22.1' 'ndk;24.0.8215888'
+
+      - name: Set up Java 11 for Android Gradle Plugin
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Prepare pinned Winlator and official Wine components
+        run: |
+          set -euo pipefail
+          git init winlator-app
+          git -C winlator-app remote add origin https://github.com/brunodev85/winlator-app.git
+          git -C winlator-app fetch --depth 1 origin c2f4ad4534f4637b543a9a3b085e28f50cf6d01c
+          git -C winlator-app checkout --detach FETCH_HEAD
+          test "$(git -C winlator-app rev-parse HEAD)" = c2f4ad4534f4637b543a9a3b085e28f50cf6d01c
+          git -C winlator-app lfs pull
+
+          ROOTFS=winlator-app/app/src/main/assets/rootfs.tzst
+          test -s "$ROOTFS"
+          sha256sum "$ROOTFS" | tee rootfs-source-sha256.txt
+          mkdir -p wine-components-v13
+          tar --use-compress-program=unzstd -xOf "$ROOTFS" ./opt/wine/lib/wine/x86_64-unix/ntdll.so > wine-components-v13/ntdll.so
+          tar --use-compress-program=unzstd -xOf "$ROOTFS" ./opt/wine/lib/wine/x86_64-windows/wow64.dll > wine-components-v13/wow64.dll
+          tar --use-compress-program=unzstd -xOf "$ROOTFS" ./opt/wine/bin/wineserver > wine-components-v13/wineserver
+          tar --use-compress-program=unzstd -xOf "$ROOTFS" ./opt/wine/lib/wine/x86_64-unix/nsiproxy.so > wine-components-v13/nsiproxy.so
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          root = Path('wine-components-v13')
+          old = b'/data/data/com.winlator/files/rootfs'
+          alias = b'/data/user/0/com.winlator.trcompat/r'
+          source = {
+              'ntdll.so': '39f254917b939051ab32fe2df6357acc47b22b39e0c62dce4766e052286bdb0f',
+              'wow64.dll': '2fbdc987de14bf15aa56ac2c3f9f4e4a2034905cc0812ea5d5b83005a69965df',
+              'wineserver': 'f91a57493829473f3c08dc4f8976a47646b7df736c352c0359e26f2c1cb9784f',
+              'nsiproxy.so': 'bac106d309fd86b3a64b6d55c8b115d618b1629204dd56731e5616401b3e6aad',
+          }
+          final = {
+              'ntdll.so': 'd24a6f8c3fcadfb8fda16002dac47ca71304eccc702453c4424c4cfb859cdfad',
+              'wow64.dll': '2fbdc987de14bf15aa56ac2c3f9f4e4a2034905cc0812ea5d5b83005a69965df',
+              'wineserver': 'ea66ec3d956bea4b1c4e880352a655dad6036186b3645dc02cd11062386a13cc',
+              'nsiproxy.so': 'f747f50334ac75b26d60485ff6ed707d4b310456495374c2b43d219378ac2787',
+          }
+          report=[]
+          for name in source:
+              path=root/name
+              data=path.read_bytes()
+              before=hashlib.sha256(data).hexdigest()
+              if before != source[name]: raise SystemExit(f'{name}: source hash {before}')
+              count=data.count(old)
+              data=data.replace(old, alias)
+              path.write_bytes(data)
+              after=hashlib.sha256(data).hexdigest()
+              if after != final[name]: raise SystemExit(f'{name}: final hash {after}')
+              report.append(f'{name} source={before} alias_occurrences={count} final={after}')
+          (root/'COMPONENT_REPORT.txt').write_text('\n'.join(report)+'\n', encoding='utf-8')
+          print('\n'.join(report))
+          PY
+
+          chmod 755 wine-components-v13/ntdll.so wine-components-v13/wineserver wine-components-v13/nsiproxy.so
+          sha256sum wine-components-v13/ntdll.so wine-components-v13/wow64.dll \
+            wine-components-v13/wineserver wine-components-v13/nsiproxy.so \
+            | tee wine-components-v13/SHA256SUMS.txt
+
+      - name: Apply v13 XIGNCODE API diagnostics
+        run: |
+          set -euo pipefail
+          python3 tr_winlator_apk/apply_v13_patch.py winlator-app wine-components-v13
+          grep -R 'versionName "11.1-trcompat13-xign-diag"' -n winlator-app/app/build.gradle
+          grep -R 'TR_DIAG_v13_XIGN.zip' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatDiagnostics.java
+          grep -R 'wine_api_trace.txt' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatDiagnostics.java
+          grep -R 'traceWineDebugLine' -n winlator-app/app/src/main/java/com/winlator/core/ProcessHelper.java
+          grep -R 'WINEDEBUG_DIAGNOSTIC' -n winlator-app/app/src/main/java/com/winlator/XServerDisplayActivity.java
+          cat winlator-app/v9-rootfs-patch-report.txt | tee v13-rootfs-patch-report.txt
+          grep '^rootfs_patched_files=165$' v13-rootfs-patch-report.txt
+          grep '^rootfs_occurrences=447$' v13-rootfs-patch-report.txt
+
+      - name: Restore persistent debug signing key
+        id: debug-key-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: trcompat-debug-keystore-v1
+
+      - name: Create debug signing key
+        if: steps.debug-key-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair -keystore "$HOME/.android/debug.keystore" \
+            -storepass android -alias androiddebugkey -keypass android \
+            -dname 'CN=Android Debug,O=Android,C=US' -keyalg RSA -keysize 2048 \
+            -validity 10000 -noprompt
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Build APK
+        working-directory: winlator-app
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee ../apk-build-v13-xign.log
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_V13_XIGN_BUILD_LOG
+          path: |
+            apk-build-v13-xign.log
+            v13-rootfs-patch-report.txt
+            rootfs-source-sha256.txt
+            wine-components-v13/COMPONENT_REPORT.txt
+            wine-components-v13/SHA256SUMS.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Collect APK
+        run: |
+          set -euo pipefail
+          mkdir -p out-v13-xign
+          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk out-v13-xign/Winlator_11.1_TR_Compat_v13_XIGN_DIAG.apk
+          sha256sum out-v13-xign/Winlator_11.1_TR_Compat_v13_XIGN_DIAG.apk | tee out-v13-xign/SHA256SUMS.txt
+          cp rootfs-source-sha256.txt wine-components-v13/COMPONENT_REPORT.txt out-v13-xign/
+          cp wine-components-v13/SHA256SUMS.txt out-v13-xign/WINE_COMPONENT_SHA256SUMS.txt
+          cat > out-v13-xign/README_KO.txt <<'EOF'
+          Winlator TR Compat v13 XIGNCODE API 진단 빌드
+          v12 공식 Wine 기준선을 유지하며 보안 판정 반환값은 수정하지 않는다.
+          프로세스·DLL·파일·레지스트리·HTTP·TLS·암호화·예외 진단만 추가한다.
+          인증 토큰, 티켓, authkey와 서명 매개변수는 기록 전에 마스킹한다.
+          진단 ZIP: /storage/emulated/0/Documents/Winlator/TR_DIAG_v13_XIGN.zip
+          핵심 파일: wine_api_trace.txt
+          EOF
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V13_XIGN_DIAG
+          path: out-v13-xign/*
+          if-no-files-found: error
+          retention-days: 30
