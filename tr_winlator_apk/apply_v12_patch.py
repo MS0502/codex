@@ -8,6 +8,7 @@ import apply_v11_patch as v11
 
 
 # A/B baseline: official Winlator 11.1 Wine components, no token return patch.
+# The runtime revision is intentionally distinct so an installed v11 is replaced.
 REVISION = "v12-official-baseline-1"
 
 
