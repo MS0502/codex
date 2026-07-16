@@ -1,0 +1,174 @@
+name: TR Winlator compatibility APK v7
+
+on:
+  push:
+    branches:
+      - tr-wine-compat-patch
+    paths:
+      - '.github/workflows/tr-winlator-debug-apk-v7.yml'
+      - 'tr_winlator_apk/apply_v7_patch.py'
+      - 'tr_winlator_apk/apply_v6_patch.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/tr-winlator-debug-apk-v7.yml'
+      - 'tr_winlator_apk/apply_v7_patch.py'
+      - 'tr_winlator_apk/apply_v6_patch.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tr-winlator-v7-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-apk-v7:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install v7 packaging tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y zstd patchelf file
+
+      - name: Set up Java 17 for sdkmanager
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" \
+            'platforms;android-34' \
+            'build-tools;34.0.0' \
+            'cmake;3.22.1' \
+            'ndk;24.0.8215888'
+
+      - name: Set up Java 11 for Android Gradle Plugin
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Fetch official Winlator 11.1 app source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init winlator-app
+          git -C winlator-app remote add origin https://github.com/brunodev85/winlator-app.git
+          git -C winlator-app fetch --depth 1 origin c2f4ad4534f4637b543a9a3b085e28f50cf6d01c
+          git -C winlator-app checkout --detach FETCH_HEAD
+          test "$(git -C winlator-app rev-parse HEAD)" = 'c2f4ad4534f4637b543a9a3b085e28f50cf6d01c'
+          git -C winlator-app lfs pull || true
+
+      - name: Apply TR Compat v7 Box64 launch patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tr_winlator_apk/apply_v7_patch.py winlator-app
+          grep -R 'versionName "11.1-trcompat7"' -n winlator-app/app/build.gradle
+          grep -R 'TR_DIAG_v7.zip' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatDiagnostics.java
+          grep -R 'LAUNCH_STAGE3_NATIVE_BEGIN' -n winlator-app/app/src/main/java/com/winlator/xenvironment/components/GuestProgramLauncherComponent.java
+          grep -R 'trcompat_box64_revision' -n winlator-app/app/src/main/java/com/winlator/xenvironment/components/GuestProgramLauncherComponent.java
+          test -f winlator-app/app/src/main/jniLibs/arm64-v8a/libtr_box64_exec.so
+          test -f winlator-app/app/src/main/jniLibs/arm64-v8a/libtr_glibc_loader.so
+          patchelf --print-interpreter winlator-app/app/src/main/jniLibs/arm64-v8a/libtr_box64_exec.so | tee box64-interpreter-v7.txt
+          grep -Fx '/data/data/com.winlator.trcompat/files/rootfs/lib/ld-linux-aarch64.so.1' box64-interpreter-v7.txt
+          sha256sum \
+            winlator-app/app/src/main/jniLibs/arm64-v8a/libtr_box64_exec.so \
+            winlator-app/app/src/main/jniLibs/arm64-v8a/libtr_glibc_loader.so \
+            winlator-app/app/src/main/assets/box64/box64-0.4.0.tzst \
+            | tee v7-component-sha256.txt
+
+      - name: Restore persistent TR Compat debug signing key
+        id: debug-key-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: trcompat-debug-keystore-v1
+
+      - name: Create persistent TR Compat debug signing key
+        if: steps.debug-key-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair \
+            -keystore "$HOME/.android/debug.keystore" \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -dname 'CN=Android Debug,O=Android,C=US' \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -noprompt
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Build v7 debug APK
+        working-directory: winlator-app
+        shell: bash
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee ../apk-build-v7.log
+
+      - name: Upload v7 APK build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V7_BUILD_LOG
+          path: |
+            apk-build-v7.log
+            box64-interpreter-v7.txt
+            v7-component-sha256.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Collect v7 APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out-v7
+          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk out-v7/Winlator_11.1_TR_Compat_v7.apk
+          sha256sum out-v7/Winlator_11.1_TR_Compat_v7.apk | tee out-v7/SHA256SUMS.txt
+          cp box64-interpreter-v7.txt v7-component-sha256.txt out-v7/
+          cat > out-v7/README_KO.txt <<'EOF'
+          Winlator TR Compat v7 Box64 실행 진단 빌드
+
+          v6에서 확인된 Box64 EACCES를 세 경로로 처리한다.
+          1. com.winlator.trcompat 인터프리터로 수정된 rootfs Box64 직접 실행
+          2. rootfs glibc loader를 통한 실행
+          3. APK nativeLibraryDir에 포함된 loader와 Box64를 통한 실행
+
+          출력 파일:
+          /storage/emulated/0/Documents/Winlator/TR_DIAG_v7.zip
+
+          기존 Winlator TR Compat v6 위에 업데이트 설치한다.
+          게임 또는 XIGNCODE 파일은 수정하지 않는다.
+          EOF
+
+      - name: Upload v7 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V7
+          path: out-v7/*
+          if-no-files-found: error
+          retention-days: 30
