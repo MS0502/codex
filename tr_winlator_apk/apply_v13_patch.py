@@ -7,7 +7,7 @@ from pathlib import Path
 import apply_v12_patch as v12
 
 
-REVISION = "v13-xign-api-diagnostics-1"
+REVISION = "v13-xign-api-diagnostics-2"
 WINEDEBUG_VALUE = (
     "-all,err+all,warn+all,fixme+all,+timestamp,+pid,+tid,"
     "+process,+module,+loaddll,+file,+reg,+winhttp,+wininet,"
@@ -94,17 +94,19 @@ def patch_v13(root: Path) -> None:
         raise RuntimeError("diagnostics reset anchor not found")
     text = text.replace(old_reset, new_reset, 1)
 
-    old_sanitize_end = '''        safe = safe.replaceAll("(?<![A-Za-z0-9_-])(?:[A-Za-z0-9_-]{10,}\\.){2,4}[A-Za-z0-9_-]{10,}(?![A-Za-z0-9_-])", "[REDACTED_TOKEN]");
-        return safe;
-'''
-    new_sanitize_end = '''        safe = safe.replaceAll("(?<![A-Za-z0-9_-])(?:[A-Za-z0-9_-]{10,}\\.){2,4}[A-Za-z0-9_-]{10,}(?![A-Za-z0-9_-])", "[REDACTED_TOKEN]");
-        safe = safe.replaceAll("(?i)([?&](?:token|authkey|ticket|session|signature|sig)=)[^&\\s]+", "$1[REDACTED]");
+    old_return = '''        return safe;
+    }
+
+    public static void traceProcessLine'''
+    new_return = r'''        safe = safe.replaceAll("(?i)([?&](?:token|authkey|ticket|session|signature|sig)=)[^&\\s]+", "$1[REDACTED]");
         safe = safe.replaceAll("(?i)(\\b(?:authkey|sessionkey|ticket|signature)\\b\\s*[:=]\\s*)[^\\s&;,]+", "$1[REDACTED]");
         return safe;
-'''
-    if old_sanitize_end not in text:
-        raise RuntimeError("diagnostics sanitize anchor not found")
-    text = text.replace(old_sanitize_end, new_sanitize_end, 1)
+    }
+
+    public static void traceProcessLine'''
+    if old_return not in text:
+        raise RuntimeError("diagnostics sanitize return anchor not found")
+    text = text.replace(old_return, new_return, 1)
 
     old_after_process = '''    public static void traceProcessLine(String stream, String line) {
         int index = PROCESS_LINE_COUNT.incrementAndGet();
