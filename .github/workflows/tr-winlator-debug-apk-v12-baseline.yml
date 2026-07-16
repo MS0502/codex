@@ -1,18 +1,6 @@
 name: TR Winlator compatibility APK v12 baseline
 
 on:
-  push:
-    branches: [tr-wine-compat-baseline-v12]
-    paths:
-      - '.github/workflows/tr-winlator-debug-apk-v12-baseline.yml'
-      - 'tr_winlator_apk/apply_v6_patch.py'
-      - 'tr_winlator_apk/apply_v7_patch.py'
-      - 'tr_winlator_apk/apply_v8_patch.py'
-      - 'tr_winlator_apk/apply_v9_patch.py'
-      - 'tr_winlator_apk/apply_v9_fixed_patch.py'
-      - 'tr_winlator_apk/apply_v10_patch.py'
-      - 'tr_winlator_apk/apply_v11_patch.py'
-      - 'tr_winlator_apk/apply_v12_patch.py'
   pull_request:
     branches: [tr-wine-compat-patch]
     paths:
