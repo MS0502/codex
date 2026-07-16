@@ -1,0 +1,227 @@
+name: TR Winlator compatibility APK v11
+
+on:
+  push:
+    branches: [tr-wine-compat-patch]
+    paths:
+      - '.github/workflows/tr-winlator-debug-apk-v11.yml'
+      - 'tr_winlator_apk/apply_v6_patch.py'
+      - 'tr_winlator_apk/apply_v7_patch.py'
+      - 'tr_winlator_apk/apply_v8_patch.py'
+      - 'tr_winlator_apk/apply_v9_patch.py'
+      - 'tr_winlator_apk/apply_v9_fixed_patch.py'
+      - 'tr_winlator_apk/apply_v10_patch.py'
+      - 'tr_winlator_apk/apply_v11_patch.py'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/tr-winlator-debug-apk-v11.yml'
+      - 'tr_winlator_apk/apply_v6_patch.py'
+      - 'tr_winlator_apk/apply_v7_patch.py'
+      - 'tr_winlator_apk/apply_v8_patch.py'
+      - 'tr_winlator_apk/apply_v9_patch.py'
+      - 'tr_winlator_apk/apply_v9_fixed_patch.py'
+      - 'tr_winlator_apk/apply_v10_patch.py'
+      - 'tr_winlator_apk/apply_v11_patch.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tr-winlator-v11-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-apk-v11:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            python3 git git-lfs ca-certificates curl unzip zstd patchelf file
+
+      - name: Set up Java 17 for sdkmanager
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK components
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" \
+            'platforms;android-34' \
+            'build-tools;34.0.0' \
+            'cmake;3.22.1' \
+            'ndk;24.0.8215888'
+
+      - name: Set up Java 11 for Android Gradle Plugin
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Fetch exact Winlator 11.1 source
+        run: |
+          set -euo pipefail
+          git init winlator-app
+          git -C winlator-app remote add origin https://github.com/brunodev85/winlator-app.git
+          git -C winlator-app fetch --depth 1 origin c2f4ad4534f4637b543a9a3b085e28f50cf6d01c
+          git -C winlator-app checkout --detach FETCH_HEAD
+          test "$(git -C winlator-app rev-parse HEAD)" = 'c2f4ad4534f4637b543a9a3b085e28f50cf6d01c'
+          git -C winlator-app lfs pull
+          test -s winlator-app/app/src/main/assets/rootfs.tzst
+
+      - name: Download verified TokenPrivateNameSpace components
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p token-components
+          curl --fail --location \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/repos/MS0502/codex/actions/artifacts/8307612788/zip \
+            --output token-components.zip
+          echo '303bd6a661ad7d0d8d13cbd2fb49c024898f3d7aa4e04a8b182e009a6314341f  token-components.zip' | sha256sum -c -
+          unzip -q token-components.zip -d token-components
+          test -f token-components/lib/wine/x86_64-unix/ntdll.so
+          test -f token-components/lib/wine/x86_64-windows/wow64.dll
+
+      - name: Assemble official-runtime v11 Wine components
+        run: |
+          set -euo pipefail
+          mkdir -p wine-components-v11
+          cp token-components/lib/wine/x86_64-unix/ntdll.so wine-components-v11/ntdll.so
+          cp token-components/lib/wine/x86_64-windows/wow64.dll wine-components-v11/wow64.dll
+          tar --use-compress-program=unzstd -xOf winlator-app/app/src/main/assets/rootfs.tzst \
+            ./opt/wine/bin/wineserver > wine-components-v11/wineserver
+          tar --use-compress-program=unzstd -xOf winlator-app/app/src/main/assets/rootfs.tzst \
+            ./opt/wine/lib/wine/x86_64-unix/nsiproxy.so > wine-components-v11/nsiproxy.so
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root = Path('wine-components-v11')
+          old = b'/data/data/com.winlator/files/rootfs'
+          alias = b'/data/user/0/com.winlator.trcompat/r'
+          before = {
+              'ntdll.so':'6f4f2250dc7e8453bba2c164c49d47aa3f492f57d8e178a6cf0b4ddb45b821f9',
+              'wow64.dll':'a100b12aa2c4b2151203f881b3b48e9a5af0e000526ccc31ed31de3c72aebe71',
+              'wineserver':'f91a57493829473f3c08dc4f8976a47646b7df736c352c0359e26f2c1cb9784f',
+              'nsiproxy.so':'bac106d309fd86b3a64b6d55c8b115d618b1629204dd56731e5616401b3e6aad',
+          }
+          after = {
+              'ntdll.so':'2b4e5dd9955d1ceaab8e5849d94639851918900381e9015b16b8d2bf50cae7bf',
+              'wow64.dll':'a100b12aa2c4b2151203f881b3b48e9a5af0e000526ccc31ed31de3c72aebe71',
+              'wineserver':'ea66ec3d956bea4b1c4e880352a655dad6036186b3645dc02cd11062386a13cc',
+              'nsiproxy.so':'f747f50334ac75b26d60485ff6ed707d4b310456495374c2b43d219378ac2787',
+          }
+          report=[]
+          for name in before:
+              p=root/name
+              data=p.read_bytes()
+              digest=hashlib.sha256(data).hexdigest()
+              if digest != before[name]: raise SystemExit(f'{name}: source hash {digest}')
+              data=data.replace(old, alias)
+              p.write_bytes(data)
+              final=hashlib.sha256(data).hexdigest()
+              if final != after[name]: raise SystemExit(f'{name}: patched hash {final}')
+              report.append(f'{name} before={digest} after={final}')
+          (root/'COMPONENT_REPORT.txt').write_text('\n'.join(report)+'\n',encoding='utf-8')
+          print('\n'.join(report))
+          PY
+          chmod 755 wine-components-v11/ntdll.so wine-components-v11/wineserver wine-components-v11/nsiproxy.so
+          sha256sum wine-components-v11/ntdll.so wine-components-v11/wow64.dll \
+            wine-components-v11/wineserver wine-components-v11/nsiproxy.so \
+            | tee wine-components-v11/SHA256SUMS.txt
+
+      - name: Apply v11 main Wine repair
+        run: |
+          set -euo pipefail
+          python3 tr_winlator_apk/apply_v11_patch.py winlator-app wine-components-v11
+          grep -R 'versionName "11.1-trcompat11"' -n winlator-app/app/build.gradle
+          grep -R 'TR_DIAG_v11.zip' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatDiagnostics.java
+          grep -R 'v11-main-wine-token-1' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatWinePatcher.java
+          grep -R '"/opt/wine".equals(winePath)' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatWinePatcher.java
+          cat winlator-app/v9-rootfs-patch-report.txt | tee v11-rootfs-patch-report.txt
+          grep '^rootfs_patched_files=165$' v11-rootfs-patch-report.txt
+          grep '^rootfs_occurrences=447$' v11-rootfs-patch-report.txt
+
+      - name: Restore persistent TR Compat debug signing key
+        id: debug-key-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: trcompat-debug-keystore-v1
+
+      - name: Create persistent TR Compat debug signing key
+        if: steps.debug-key-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair -keystore "$HOME/.android/debug.keystore" \
+            -storepass android -alias androiddebugkey -keypass android \
+            -dname 'CN=Android Debug,O=Android,C=US' -keyalg RSA -keysize 2048 \
+            -validity 10000 -noprompt
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Build v11 debug APK
+        working-directory: winlator-app
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee ../apk-build-v11.log
+
+      - name: Upload v11 build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V11_BUILD_LOG
+          path: |
+            apk-build-v11.log
+            v11-rootfs-patch-report.txt
+            wine-components-v11/COMPONENT_REPORT.txt
+            wine-components-v11/SHA256SUMS.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Collect v11 APK
+        run: |
+          set -euo pipefail
+          mkdir -p out-v11
+          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk out-v11/Winlator_11.1_TR_Compat_v11.apk
+          sha256sum out-v11/Winlator_11.1_TR_Compat_v11.apk | tee out-v11/SHA256SUMS.txt
+          cp wine-components-v11/COMPONENT_REPORT.txt out-v11/
+          cp wine-components-v11/SHA256SUMS.txt out-v11/WINE_COMPONENT_SHA256SUMS.txt
+          cat > out-v11/README_KO.txt <<'EOF'
+          Winlator TR Compat v11 /opt/wine TokenPrivateNameSpace 적용 빌드
+
+          v10 로그에서 현재 컨테이너가 /opt/wine을 사용해 런타임 패처가
+          건너뛰었고, trgame 보조 프로세스가 TokenPrivateNameSpace 미구현으로
+          종료된 사실이 확인됐다. v11은 /opt/wine과 설치형 wine-10.10-trcompat
+          양쪽에 검증된 호환 구성요소를 적용한다.
+
+          게임 및 XIGNCODE 파일은 수정하지 않는다.
+          결과: /storage/emulated/0/Documents/Winlator/TR_DIAG_v11.zip
+          EOF
+
+      - name: Upload v11 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V11
+          path: out-v11/*
+          if-no-files-found: error
+          retention-days: 30

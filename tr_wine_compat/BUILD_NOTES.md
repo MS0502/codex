@@ -1,0 +1,1 @@
+Build target: upstream Wine 10.10. The first CI stage validates the source patch and produces the affected ntdll/wow64 components. These components must not be copied into an existing Winlator runtime until their ABI and package layout have been checked against the exact Winlator 11.1 Wine build.

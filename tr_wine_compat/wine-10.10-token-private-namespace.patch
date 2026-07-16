@@ -1,0 +1,59 @@
+diff --git a/include/winnt.h b/include/winnt.h
+index e776312f922..00000000000 100644
+--- a/include/winnt.h
++++ b/include/winnt.h
+@@ -4239,6 +4239,7 @@ typedef enum _TOKEN_INFORMATION_CLASS {
+   TokenSecurityAttributes,
+   TokenIsRestricted,
+   TokenProcessTrustLevel,
++  TokenPrivateNameSpace,
+   MaxTokenInfoClass
+ } TOKEN_INFORMATION_CLASS;
+ 
+diff --git a/dlls/ntdll/unix/security.c b/dlls/ntdll/unix/security.c
+index 84e71154585..00000000000 100644
+--- a/dlls/ntdll/unix/security.c
++++ b/dlls/ntdll/unix/security.c
+@@ -369,7 +369,8 @@ NTSTATUS WINAPI NtQueryInformationToken( HANDLE token, TOKEN_INFORMATION_CLASS c
+         0,    /* TokenSecurityAttributes */
+         0,    /* TokenIsRestricted */
+-        0     /* TokenProcessTrustLevel */
++        0,    /* TokenProcessTrustLevel */
++        sizeof(DWORD) /* TokenPrivateNameSpace */
+     };
+ 
+     ULONG len = 0;
+@@ -377,7 +378,7 @@ NTSTATUS WINAPI NtQueryInformationToken( HANDLE token, TOKEN_INFORMATION_CLASS c
+ 
+     TRACE( "(%p,%s,%p,%d,%p)\n", token, debugstr_TokenInformationClass(class), info, length, retlen );
+ 
+-    if (class < MaxTokenInfoClass) len = info_len[class];
++    if (class < ARRAY_SIZE(info_len)) len = info_len[class];
+     if (retlen) *retlen = len;
+     if (length < len) return STATUS_BUFFER_TOO_SMALL;
+ 
+@@ -603,6 +604,15 @@ NTSTATUS WINAPI NtQueryInformationToken( HANDLE token, TOKEN_INFORMATION_CLASS c
+             break;
+         }
+ 
++    case TokenPrivateNameSpace:
++        /* A normal desktop process token is not in a private namespace. */
++        if (!info) return STATUS_ACCESS_VIOLATION;
++        *(DWORD *)info = 0;
++        TRACE("QueryInformationToken( ..., TokenPrivateNameSpace, ...) returning FALSE\n");
++        break;
++
+     case TokenLinkedToken:
+         SERVER_START_REQ( create_linked_token )
+         {
+diff --git a/dlls/wow64/security.c b/dlls/wow64/security.c
+index a7616331600..00000000000 100644
+--- a/dlls/wow64/security.c
++++ b/dlls/wow64/security.c
+@@ -380,6 +380,7 @@ NTSTATUS WINAPI wow64_NtQueryInformationToken( UINT *args )
+     case TokenVirtualizationEnabled:  /* ULONG */
+     case TokenUIAccess:  /* ULONG */
+     case TokenIsAppContainer:  /* ULONG */
++    case TokenPrivateNameSpace:  /* ULONG */
+         /* nothing to map */
+         return NtQueryInformationToken( handle, class, info, len, retlen );

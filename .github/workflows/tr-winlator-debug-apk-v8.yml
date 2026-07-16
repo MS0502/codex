@@ -1,0 +1,267 @@
+name: TR Winlator compatibility APK v8
+
+on:
+  push:
+    branches:
+      - tr-wine-compat-patch
+    paths:
+      - '.github/workflows/tr-winlator-debug-apk-v8.yml'
+      - 'tr_wine_compat/apply_wine_10_10_patch.py'
+      - 'tr_winlator_apk/apply_v6_patch.py'
+      - 'tr_winlator_apk/apply_v7_patch.py'
+      - 'tr_winlator_apk/apply_v8_patch.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/tr-winlator-debug-apk-v8.yml'
+      - 'tr_wine_compat/apply_wine_10_10_patch.py'
+      - 'tr_winlator_apk/apply_v6_patch.py'
+      - 'tr_winlator_apk/apply_v7_patch.py'
+      - 'tr_winlator_apk/apply_v8_patch.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tr-winlator-v8-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-apk-v8:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Wine and APK build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential gcc-multilib g++-multilib libc6-dev:i386 \
+            flex bison mingw-w64 pkg-config python3 git ca-certificates \
+            zstd patchelf file
+
+      - name: Set up Java 17 for sdkmanager
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" \
+            'platforms;android-34' \
+            'build-tools;34.0.0' \
+            'cmake;3.22.1' \
+            'ndk;24.0.8215888'
+
+      - name: Set up Java 11 for Android Gradle Plugin
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Fetch exact Winlator Wine and app sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init wine-src
+          git -C wine-src remote add origin https://github.com/brunodev85/wine-10.10-custom.git
+          git -C wine-src fetch --depth 1 origin 494fb8f4a30fcb9d0b9c00f72a7f2b7a17e787b0
+          git -C wine-src checkout --detach FETCH_HEAD
+          test "$(git -C wine-src rev-parse HEAD)" = '494fb8f4a30fcb9d0b9c00f72a7f2b7a17e787b0'
+
+          git init winlator-app
+          git -C winlator-app remote add origin https://github.com/brunodev85/winlator-app.git
+          git -C winlator-app fetch --depth 1 origin c2f4ad4534f4637b543a9a3b085e28f50cf6d01c
+          git -C winlator-app checkout --detach FETCH_HEAD
+          test "$(git -C winlator-app rev-parse HEAD)" = 'c2f4ad4534f4637b543a9a3b085e28f50cf6d01c'
+          git -C winlator-app lfs pull || true
+
+      - name: Apply Wine token and TR Compat package-path patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tr_wine_compat/apply_wine_10_10_patch.py wine-src
+          git -C wine-src diff --check
+          git -C wine-src diff -- \
+            include/winnt.h \
+            dlls/ntdll/unix/security.c \
+            dlls/wow64/security.c \
+            dlls/ntdll/unix/server.c \
+            server/request.c \
+            server/unicode.c \
+            dlls/nsiproxy.sys/ndis.c | tee wine-v8-source.diff
+          ! grep -R '/data/data/com.winlator/files/rootfs' \
+            wine-src/dlls/ntdll/unix/server.c \
+            wine-src/server/request.c \
+            wine-src/server/unicode.c \
+            wine-src/dlls/nsiproxy.sys/ndis.c
+          grep -R '/data/data/com.winlator.trcompat/files/rootfs' \
+            wine-src/dlls/ntdll/unix/server.c \
+            wine-src/server/request.c \
+            wine-src/server/unicode.c \
+            wine-src/dlls/nsiproxy.sys/ndis.c
+
+      - name: Configure 64-bit Winlator Wine
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir build64
+          cd build64
+          ../wine-src/configure \
+            --enable-win64 \
+            --prefix=/root/wine-build/wine-install-wow64 \
+            --without-alsa --without-capi --without-coreaudio --without-cups \
+            --without-dbus --without-fontconfig --without-freetype --without-gettext \
+            --without-gettextpo --without-gphoto --without-gssapi --without-inotify \
+            --without-krb5 --without-ldap --without-netapi --without-openal \
+            --without-opencl --without-opengl --without-oss --without-pcap \
+            --without-pcsclite --without-pulse --without-sane --without-sdl \
+            --without-udev --without-unwind --without-usb --without-v4l2 \
+            --without-vulkan --without-wayland --without-x --without-xattr
+
+      - name: Build v8 Wine runtime components
+        shell: bash
+        run: |
+          set -o pipefail
+          make -C build64 -j2 \
+            dlls/ntdll/ntdll.so \
+            dlls/wow64/x86_64-windows/wow64.dll \
+            server/wineserver \
+            dlls/nsiproxy.sys/nsiproxy.so 2>&1 | tee wine-build-v8.log
+
+      - name: Collect and verify v8 Wine components
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p wine-components-v8
+          cp build64/dlls/ntdll/ntdll.so wine-components-v8/ntdll.so
+          cp build64/dlls/wow64/x86_64-windows/wow64.dll wine-components-v8/wow64.dll
+          cp build64/server/wineserver wine-components-v8/wineserver
+          cp build64/dlls/nsiproxy.sys/nsiproxy.so wine-components-v8/nsiproxy.so
+
+          strip --strip-unneeded wine-components-v8/ntdll.so
+          strip --strip-unneeded wine-components-v8/wow64.dll
+          strip --strip-unneeded wine-components-v8/wineserver
+          strip --strip-unneeded wine-components-v8/nsiproxy.so
+          chmod 755 wine-components-v8/ntdll.so wine-components-v8/wineserver wine-components-v8/nsiproxy.so
+
+          file wine-components-v8/* | tee wine-components-v8/FILE.txt
+          sha256sum wine-components-v8/ntdll.so wine-components-v8/wow64.dll \
+            wine-components-v8/wineserver wine-components-v8/nsiproxy.so \
+            | tee wine-components-v8/SHA256SUMS.txt
+          ! strings wine-components-v8/ntdll.so wine-components-v8/wineserver wine-components-v8/nsiproxy.so \
+            | grep -F '/data/data/com.winlator/files/rootfs'
+          strings wine-components-v8/ntdll.so wine-components-v8/wineserver wine-components-v8/nsiproxy.so \
+            | grep -F '/data/data/com.winlator.trcompat/files/rootfs' \
+            | tee wine-components-v8/TRCOMPAT_PATHS.txt
+
+      - name: Apply v8 APK runtime repair patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tr_winlator_apk/apply_v8_patch.py winlator-app wine-components-v8
+          grep -R 'versionName "11.1-trcompat8"' -n winlator-app/app/build.gradle
+          grep -R 'TR_DIAG_v8.zip' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatDiagnostics.java
+          grep -R 'WINE_RUNTIME_PATCH_COMPLETE' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatWinePatcher.java
+          grep -R 'WINE_RUNTIME_PATCH_RETURN' -n winlator-app/app/src/main/java/com/winlator/XServerDisplayActivity.java
+          test -f winlator-app/app/src/main/assets/trcompat_wine_v8/ntdll.so
+          test -f winlator-app/app/src/main/assets/trcompat_wine_v8/wow64.dll
+          test -f winlator-app/app/src/main/assets/trcompat_wine_v8/wineserver
+          test -f winlator-app/app/src/main/assets/trcompat_wine_v8/nsiproxy.so
+
+      - name: Restore persistent TR Compat debug signing key
+        id: debug-key-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: trcompat-debug-keystore-v1
+
+      - name: Create persistent TR Compat debug signing key
+        if: steps.debug-key-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair \
+            -keystore "$HOME/.android/debug.keystore" \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -dname 'CN=Android Debug,O=Android,C=US' \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -noprompt
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Build v8 debug APK
+        working-directory: winlator-app
+        shell: bash
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee ../apk-build-v8.log
+
+      - name: Upload v8 build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V8_BUILD_LOG
+          path: |
+            apk-build-v8.log
+            wine-build-v8.log
+            wine-v8-source.diff
+            wine-components-v8/FILE.txt
+            wine-components-v8/SHA256SUMS.txt
+            wine-components-v8/TRCOMPAT_PATHS.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Collect v8 APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out-v8
+          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk out-v8/Winlator_11.1_TR_Compat_v8.apk
+          sha256sum out-v8/Winlator_11.1_TR_Compat_v8.apk | tee out-v8/SHA256SUMS.txt
+          cp wine-components-v8/SHA256SUMS.txt out-v8/WINE_COMPONENT_SHA256SUMS.txt
+          cat > out-v8/README_KO.txt <<'EOF'
+          Winlator TR Compat v8 Wine 런타임 경로 복구 빌드
+
+          v7에서 Box64는 정상 시작됐으나 Wine 10.10이 원래 패키지
+          /data/data/com.winlator 경로를 사용해 즉시 종료됐다.
+
+          v8은 기존 Wine 10.10-trcompat 컨테이너를 유지하면서 실행 전에
+          ntdll.so, wow64.dll, wineserver, nsiproxy.so의 해시를 검증하고
+          com.winlator.trcompat 경로로 빌드된 구성요소를 원자적으로 교체한다.
+          원본은 *.trcompat-v7.bak으로 한 번만 보관한다.
+
+          결과:
+          /storage/emulated/0/Documents/Winlator/TR_DIAG_v8.zip
+
+          게임 및 XIGNCODE 파일은 수정하지 않는다.
+          EOF
+
+      - name: Upload v8 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V8
+          path: out-v8/*
+          if-no-files-found: error
+          retention-days: 30

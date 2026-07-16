@@ -1,0 +1,101 @@
+name: TR Winlator 11.1 Wine compatibility build
+
+on:
+  push:
+    branches:
+      - tr-wine-compat-patch
+    paths:
+      - 'tr_wine_compat/**'
+      - '.github/workflows/tr-wine-compat-build.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'tr_wine_compat/**'
+      - '.github/workflows/tr-wine-compat-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential gcc-multilib g++-multilib libc6-dev:i386 \
+            flex bison mingw-w64 pkg-config python3 git ca-certificates
+
+      - name: Fetch Winlator Wine 10.10 custom source and apply patch
+        run: |
+          git init wine-src
+          git -C wine-src remote add origin https://github.com/brunodev85/wine-10.10-custom.git
+          git -C wine-src fetch --depth 1 origin 494fb8f4a30fcb9d0b9c00f72a7f2b7a17e787b0
+          git -C wine-src checkout --detach FETCH_HEAD
+          test "$(git -C wine-src rev-parse HEAD)" = "494fb8f4a30fcb9d0b9c00f72a7f2b7a17e787b0"
+          python3 "$GITHUB_WORKSPACE/tr_wine_compat/apply_wine_10_10_patch.py" "$GITHUB_WORKSPACE/wine-src"
+          git -C wine-src diff --check
+          git -C wine-src diff -- include/winnt.h dlls/ntdll/unix/security.c dlls/wow64/security.c
+
+      - name: Configure 64-bit Wine
+        run: |
+          mkdir build64
+          cd build64
+          ../wine-src/configure \
+            --enable-win64 \
+            --prefix=/root/wine-build/wine-install-wow64 \
+            --without-alsa --without-capi --without-coreaudio --without-cups \
+            --without-dbus --without-fontconfig --without-freetype --without-gettext \
+            --without-gettextpo --without-gphoto --without-gssapi --without-inotify \
+            --without-krb5 --without-ldap --without-netapi --without-openal \
+            --without-opencl --without-opengl --without-oss --without-pcap \
+            --without-pcsclite --without-pulse --without-sane --without-sdl \
+            --without-udev --without-unwind --without-usb --without-v4l2 \
+            --without-vulkan --without-wayland --without-x --without-xattr
+
+      - name: Build patched Winlator Wine components
+        shell: bash
+        run: |
+          set -o pipefail
+          make -C build64 -j2 \
+            dlls/ntdll/ntdll.so \
+            dlls/wow64/x86_64-windows/wow64.dll 2>&1 | tee build.log
+
+      - name: Strip and collect patched components
+        run: |
+          mkdir -p out/lib/wine/x86_64-unix out/lib/wine/x86_64-windows
+          cp -v build64/dlls/ntdll/ntdll.so out/lib/wine/x86_64-unix/ntdll.so
+          cp -v build64/dlls/wow64/x86_64-windows/wow64.dll out/lib/wine/x86_64-windows/wow64.dll
+          strip --strip-unneeded out/lib/wine/x86_64-unix/ntdll.so
+          strip --strip-unneeded out/lib/wine/x86_64-windows/wow64.dll
+          cp tr_wine_compat/wine-10.10-token-private-namespace.patch out/
+          printf 'source_repository=%s\nsource_commit=%s\n' \
+            'https://github.com/brunodev85/wine-10.10-custom' \
+            '494fb8f4a30fcb9d0b9c00f72a7f2b7a17e787b0' > out/SOURCE.txt
+          find out -type f -print0 | sort -z | xargs -0 sha256sum | tee out/SHA256SUMS.txt
+          file out/lib/wine/x86_64-unix/ntdll.so out/lib/wine/x86_64-windows/wow64.dll
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TR_WINLATOR_11_1_WINE_BUILD_LOG
+          path: build.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload patched components
+        uses: actions/upload-artifact@v4
+        with:
+          name: TR_WINLATOR_11_1_TOKEN_NAMESPACE_COMPONENTS
+          path: out/**
+          if-no-files-found: error
+          retention-days: 30

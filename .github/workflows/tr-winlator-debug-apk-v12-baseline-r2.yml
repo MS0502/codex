@@ -1,0 +1,200 @@
+name: TR Winlator compatibility APK v12 baseline R2
+
+on:
+  pull_request:
+    branches: [tr-wine-compat-patch]
+    paths:
+      - 'tr_winlator_apk/apply_v12_patch.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tr-winlator-v12-baseline-r2-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-apk-v12-baseline-r2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            python3 git git-lfs ca-certificates curl unzip zstd patchelf file
+
+      - name: Set up Java 17 for sdkmanager
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK components
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" \
+            'platforms;android-34' \
+            'build-tools;34.0.0' \
+            'cmake;3.22.1' \
+            'ndk;24.0.8215888'
+
+      - name: Set up Java 11 for Android Gradle Plugin
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Fetch exact Winlator 11.1 source
+        run: |
+          set -euo pipefail
+          git init winlator-app
+          git -C winlator-app remote add origin https://github.com/brunodev85/winlator-app.git
+          git -C winlator-app fetch --depth 1 origin c2f4ad4534f4637b543a9a3b085e28f50cf6d01c
+          git -C winlator-app checkout --detach FETCH_HEAD
+          test "$(git -C winlator-app rev-parse HEAD)" = 'c2f4ad4534f4637b543a9a3b085e28f50cf6d01c'
+          git -C winlator-app lfs pull
+          test -s winlator-app/app/src/main/assets/rootfs.tzst
+          sha256sum winlator-app/app/src/main/assets/rootfs.tzst | tee rootfs-source-sha256.txt
+
+      - name: Extract and alias-patch official Wine components
+        run: |
+          set -euo pipefail
+          mkdir -p wine-components-v12
+          ROOTFS=winlator-app/app/src/main/assets/rootfs.tzst
+          tar --use-compress-program=unzstd -xOf "$ROOTFS" \
+            ./opt/wine/lib/wine/x86_64-unix/ntdll.so > wine-components-v12/ntdll.so
+          tar --use-compress-program=unzstd -xOf "$ROOTFS" \
+            ./opt/wine/lib/wine/x86_64-windows/wow64.dll > wine-components-v12/wow64.dll
+          tar --use-compress-program=unzstd -xOf "$ROOTFS" \
+            ./opt/wine/bin/wineserver > wine-components-v12/wineserver
+          tar --use-compress-program=unzstd -xOf "$ROOTFS" \
+            ./opt/wine/lib/wine/x86_64-unix/nsiproxy.so > wine-components-v12/nsiproxy.so
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          root = Path('wine-components-v12')
+          old = b'/data/data/com.winlator/files/rootfs'
+          alias = b'/data/user/0/com.winlator.trcompat/r'
+          if len(old) != len(alias):
+              raise SystemExit('rootfs alias length mismatch')
+
+          report = []
+          for name in ('ntdll.so', 'wow64.dll', 'wineserver', 'nsiproxy.so'):
+              path = root / name
+              data = path.read_bytes()
+              source_sha = hashlib.sha256(data).hexdigest()
+              occurrences = data.count(old)
+              data = data.replace(old, alias)
+              path.write_bytes(data)
+              final_sha = hashlib.sha256(data).hexdigest()
+              report.append(
+                  f'{name} source={source_sha} alias_occurrences={occurrences} final={final_sha}'
+              )
+
+          (root / 'COMPONENT_REPORT.txt').write_text(
+              '\n'.join(report) + '\n', encoding='utf-8'
+          )
+          print('\n'.join(report))
+          PY
+          chmod 755 wine-components-v12/ntdll.so \
+            wine-components-v12/wineserver wine-components-v12/nsiproxy.so
+          sha256sum wine-components-v12/ntdll.so wine-components-v12/wow64.dll \
+            wine-components-v12/wineserver wine-components-v12/nsiproxy.so \
+            | tee wine-components-v12/SHA256SUMS.txt
+
+      - name: Apply v12 official Wine baseline
+        run: |
+          set -euo pipefail
+          python3 tr_winlator_apk/apply_v12_patch.py winlator-app wine-components-v12
+          grep -R 'versionName "11.1-trcompat12-baseline"' -n winlator-app/app/build.gradle
+          grep -R 'TR_DIAG_v12_BASELINE.zip' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatDiagnostics.java
+          grep -R 'v12-official-baseline-1' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatWinePatcher.java
+          grep -R '"/opt/wine".equals(winePath)' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatWinePatcher.java
+          cat winlator-app/v9-rootfs-patch-report.txt | tee v12-rootfs-patch-report.txt
+          grep '^rootfs_patched_files=165$' v12-rootfs-patch-report.txt
+          grep '^rootfs_occurrences=447$' v12-rootfs-patch-report.txt
+
+      - name: Restore persistent TR Compat debug signing key
+        id: debug-key-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: trcompat-debug-keystore-v1
+
+      - name: Create persistent TR Compat debug signing key
+        if: steps.debug-key-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair -keystore "$HOME/.android/debug.keystore" \
+            -storepass android -alias androiddebugkey -keypass android \
+            -dname 'CN=Android Debug,O=Android,C=US' -keyalg RSA -keysize 2048 \
+            -validity 10000 -noprompt
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Build v12 baseline debug APK
+        working-directory: winlator-app
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee ../apk-build-v12-baseline.log
+
+      - name: Upload v12 baseline build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_V12_BASELINE_R2_BUILD_LOG
+          path: |
+            apk-build-v12-baseline.log
+            rootfs-source-sha256.txt
+            v12-rootfs-patch-report.txt
+            wine-components-v12/COMPONENT_REPORT.txt
+            wine-components-v12/SHA256SUMS.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Collect v12 baseline APK
+        run: |
+          set -euo pipefail
+          mkdir -p out-v12-baseline
+          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk \
+            out-v12-baseline/Winlator_11.1_TR_Compat_v12_BASELINE.apk
+          sha256sum out-v12-baseline/Winlator_11.1_TR_Compat_v12_BASELINE.apk \
+            | tee out-v12-baseline/SHA256SUMS.txt
+          cp rootfs-source-sha256.txt out-v12-baseline/
+          cp wine-components-v12/COMPONENT_REPORT.txt out-v12-baseline/
+          cp wine-components-v12/SHA256SUMS.txt \
+            out-v12-baseline/WINE_COMPONENT_SHA256SUMS.txt
+          cat > out-v12-baseline/README_KO.txt <<'EOF'
+          Winlator TR Compat v12 공식 Wine 기준선 빌드
+
+          공식 Winlator 11.1의 고정된 rootfs.tzst에서 Wine 10.10의 ntdll.so,
+          wow64.dll, wineserver, nsiproxy.so를 직접 추출했다. 별도 Android 패키지
+          경로 때문에 필요한 동일 길이 rootfs alias 치환만 적용했다.
+
+          TokenPrivateNameSpace 반환값 패치는 없다. 게임, 로그인, XIGNCODE 파일은
+          수정하지 않는다. v11과 동일한 진단 및 실행 경로 보정은 유지한다.
+
+          결과 진단: /storage/emulated/0/Documents/Winlator/TR_DIAG_v12_BASELINE.zip
+          EOF
+
+      - name: Upload v12 baseline APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V12_BASELINE_R2
+          path: out-v12-baseline/*
+          if-no-files-found: error
+          retention-days: 30

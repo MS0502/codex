@@ -1,0 +1,244 @@
+name: TR Winlator compatibility APK v9
+
+on:
+  push:
+    branches:
+      - tr-wine-compat-patch
+    paths:
+      - '.github/workflows/tr-winlator-debug-apk-v9.yml'
+      - 'tr_wine_compat/apply_wine_10_10_patch.py'
+      - 'tr_winlator_apk/apply_v6_patch.py'
+      - 'tr_winlator_apk/apply_v7_patch.py'
+      - 'tr_winlator_apk/apply_v8_patch.py'
+      - 'tr_winlator_apk/apply_v9_patch.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/tr-winlator-debug-apk-v9.yml'
+      - 'tr_wine_compat/apply_wine_10_10_patch.py'
+      - 'tr_winlator_apk/apply_v6_patch.py'
+      - 'tr_winlator_apk/apply_v7_patch.py'
+      - 'tr_winlator_apk/apply_v8_patch.py'
+      - 'tr_winlator_apk/apply_v9_patch.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tr-winlator-v9-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-apk-v9:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Wine and APK build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential gcc-multilib g++-multilib libc6-dev:i386 \
+            flex bison mingw-w64 pkg-config python3 git ca-certificates \
+            zstd patchelf file
+
+      - name: Set up Java 17 for sdkmanager
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" \
+            'platforms;android-34' \
+            'build-tools;34.0.0' \
+            'cmake;3.22.1' \
+            'ndk;24.0.8215888'
+
+      - name: Set up Java 11 for Android Gradle Plugin
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Fetch exact Wine and Winlator sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init wine-src
+          git -C wine-src remote add origin https://github.com/brunodev85/wine-10.10-custom.git
+          git -C wine-src fetch --depth 1 origin 494fb8f4a30fcb9d0b9c00f72a7f2b7a17e787b0
+          git -C wine-src checkout --detach FETCH_HEAD
+          test "$(git -C wine-src rev-parse HEAD)" = '494fb8f4a30fcb9d0b9c00f72a7f2b7a17e787b0'
+
+          git init winlator-app
+          git -C winlator-app remote add origin https://github.com/brunodev85/winlator-app.git
+          git -C winlator-app fetch --depth 1 origin c2f4ad4534f4637b543a9a3b085e28f50cf6d01c
+          git -C winlator-app checkout --detach FETCH_HEAD
+          test "$(git -C winlator-app rev-parse HEAD)" = 'c2f4ad4534f4637b543a9a3b085e28f50cf6d01c'
+          git -C winlator-app lfs pull || true
+          test -s winlator-app/app/src/main/assets/rootfs.tzst
+
+      - name: Apply Wine token and package-path patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tr_wine_compat/apply_wine_10_10_patch.py wine-src
+          git -C wine-src diff --check
+          ! grep -R '/data/data/com.winlator/files/rootfs' \
+            wine-src/dlls/ntdll/unix/server.c \
+            wine-src/server/request.c \
+            wine-src/server/unicode.c \
+            wine-src/dlls/nsiproxy.sys/ndis.c
+
+      - name: Configure 64-bit Wine
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir build64
+          cd build64
+          ../wine-src/configure \
+            --enable-win64 \
+            --prefix=/root/wine-build/wine-install-wow64 \
+            --without-alsa --without-capi --without-coreaudio --without-cups \
+            --without-dbus --without-fontconfig --without-freetype --without-gettext \
+            --without-gettextpo --without-gphoto --without-gssapi --without-inotify \
+            --without-krb5 --without-ldap --without-netapi --without-openal \
+            --without-opencl --without-opengl --without-oss --without-pcap \
+            --without-pcsclite --without-pulse --without-sane --without-sdl \
+            --without-udev --without-unwind --without-usb --without-v4l2 \
+            --without-vulkan --without-wayland --without-x --without-xattr
+
+      - name: Build Wine runtime components
+        shell: bash
+        run: |
+          set -o pipefail
+          make -C build64 -j2 \
+            dlls/ntdll/ntdll.so \
+            dlls/wow64/x86_64-windows/wow64.dll \
+            server/wineserver \
+            dlls/nsiproxy.sys/nsiproxy.so 2>&1 | tee wine-build-v9.log
+
+      - name: Collect Wine components
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p wine-components-v9
+          cp build64/dlls/ntdll/ntdll.so wine-components-v9/ntdll.so
+          cp build64/dlls/wow64/x86_64-windows/wow64.dll wine-components-v9/wow64.dll
+          cp build64/server/wineserver wine-components-v9/wineserver
+          cp build64/dlls/nsiproxy.sys/nsiproxy.so wine-components-v9/nsiproxy.so
+          strip --strip-unneeded wine-components-v9/ntdll.so
+          strip --strip-unneeded wine-components-v9/wow64.dll
+          strip --strip-unneeded wine-components-v9/wineserver
+          strip --strip-unneeded wine-components-v9/nsiproxy.so
+          chmod 755 wine-components-v9/ntdll.so wine-components-v9/wineserver wine-components-v9/nsiproxy.so
+          sha256sum wine-components-v9/ntdll.so wine-components-v9/wow64.dll \
+            wine-components-v9/wineserver wine-components-v9/nsiproxy.so \
+            | tee wine-components-v9/SHA256SUMS.txt
+
+      - name: Apply v9 full-rootfs repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tr_winlator_apk/apply_v9_patch.py winlator-app wine-components-v9
+          grep -R 'versionName "11.1-trcompat9"' -n winlator-app/app/build.gradle
+          grep -R 'TR_DIAG_v9.zip' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatDiagnostics.java
+          grep -R 'ROOTFS_ALIAS_PATCH_COMPLETE' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatRootfsPatcher.java
+          grep -R 'SYNC_COMPAT_FORCED' -n winlator-app/app/src/main/java/com/winlator/XServerDisplayActivity.java
+          grep -R 'XSERVER_SOCKET_READY' -n winlator-app/app/src/main/java/com/winlator/xenvironment/components/GuestProgramLauncherComponent.java
+          cat winlator-app/v9-rootfs-patch-report.txt | tee v9-rootfs-patch-report.txt
+          grep -E '^rootfs_patched_files=([3-9][0-9]{2}|[1-9][0-9]{3,})$' v9-rootfs-patch-report.txt
+          grep -E '^rootfs_occurrences=([8-9][0-9]{2}|[1-9][0-9]{3,})$' v9-rootfs-patch-report.txt
+
+      - name: Restore persistent TR Compat debug signing key
+        id: debug-key-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: trcompat-debug-keystore-v1
+
+      - name: Create persistent TR Compat debug signing key
+        if: steps.debug-key-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair \
+            -keystore "$HOME/.android/debug.keystore" \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -dname 'CN=Android Debug,O=Android,C=US' \
+            -keyalg RSA -keysize 2048 -validity 10000 -noprompt
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Build v9 debug APK
+        working-directory: winlator-app
+        shell: bash
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee ../apk-build-v9.log
+
+      - name: Upload v9 build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V9_BUILD_LOG
+          path: |
+            apk-build-v9.log
+            wine-build-v9.log
+            v9-rootfs-patch-report.txt
+            wine-components-v9/SHA256SUMS.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Collect v9 APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out-v9
+          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk out-v9/Winlator_11.1_TR_Compat_v9.apk
+          sha256sum out-v9/Winlator_11.1_TR_Compat_v9.apk | tee out-v9/SHA256SUMS.txt
+          cp v9-rootfs-patch-report.txt out-v9/
+          cp wine-components-v9/SHA256SUMS.txt out-v9/WINE_COMPONENT_SHA256SUMS.txt
+          cat > out-v9/README_KO.txt <<'EOF'
+          Winlator TR Compat v9 전체 rootfs 경로 복구 빌드
+
+          공식 Winlator rootfs 내부의 com.winlator 절대 경로를 동일 길이의
+          com.winlator.trcompat 내부 별칭으로 전체 치환한다. 기존 설치에서는
+          첫 실행 때 추출된 rootfs도 자동 복구한다.
+
+          WINEESYNC와 WINEFSYNC는 0으로 강제하고, X11 소켓 준비 후 Wine을 시작한다.
+          기존 Wine TokenPrivateNameSpace 호환 패치는 유지한다.
+
+          결과 파일:
+          /storage/emulated/0/Documents/Winlator/TR_DIAG_v9.zip
+
+          게임 및 XIGNCODE 파일은 수정하지 않는다.
+          EOF
+
+      - name: Upload v9 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V9
+          path: out-v9/*
+          if-no-files-found: error
+          retention-days: 30
