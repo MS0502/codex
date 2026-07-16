@@ -7,6 +7,7 @@ from pathlib import Path
 import apply_v11_patch as v11
 
 
+# A/B baseline: official Winlator 11.1 Wine components, no token return patch.
 REVISION = "v12-official-baseline-1"
 
 
