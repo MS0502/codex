@@ -114,8 +114,8 @@ jobs:
 
       - name: Apply v16 process lifetime diagnostics
         run: |
-          set -euo pipefail
-          python3 tr_winlator_apk/apply_v16_patch.py winlator-app wine-components-v16
+          set -o pipefail
+          python3 tr_winlator_apk/apply_v16_patch.py winlator-app wine-components-v16 2>&1 | tee v16-apply.log
           grep -R 'versionName "11.1-trcompat16-lifetime"' -n winlator-app/app/build.gradle
           grep -R 'TR_DIAG_v16_LIFETIME.zip' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatDiagnostics.java
           grep -R 'process_lifetime.txt' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatDiagnostics.java
@@ -158,6 +158,7 @@ jobs:
           name: WINLATOR_11_1_TR_COMPAT_V16_LIFETIME_BUILD_LOG
           path: |
             apk-build-v16-lifetime.log
+            v16-apply.log
             v16-rootfs-patch-report.txt
             rootfs-source-sha256.txt
             wine-components-v16/COMPONENT_REPORT.txt
