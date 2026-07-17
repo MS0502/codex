@@ -3,6 +3,8 @@ name: Thai TalesRunner public client metadata research
 on:
   push:
     branches: [tr-thai-public-metadata-research]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -66,7 +68,7 @@ jobs:
           set -euo pipefail
           cat > /tmp/inspect_pe.py <<'PY'
           from __future__ import annotations
-          import datetime, hashlib, json, os, pathlib, subprocess
+          import datetime, hashlib, json, pathlib, subprocess
           import pefile
 
           root = pathlib.Path('research/extracted')
@@ -101,11 +103,7 @@ jobs:
 
           rows = []
           for path in sorted(candidates, key=lambda p: str(p).lower()):
-              row = {
-                  'path': str(path),
-                  'size': path.stat().st_size,
-                  'sha256': sha256(path),
-              }
+              row = {'path': str(path), 'size': path.stat().st_size, 'sha256': sha256(path)}
               try:
                   pe = pefile.PE(str(path), fast_load=False)
                   row['pe'] = True
@@ -122,9 +120,7 @@ jobs:
                                       for k, v in table.entries.items():
                                           version[decode(k)] = decode(v)
                   row['version_info'] = version
-                  row['imports'] = sorted({
-                      decode(entry.dll) for entry in getattr(pe, 'DIRECTORY_ENTRY_IMPORT', [])
-                  })
+                  row['imports'] = sorted({decode(entry.dll) for entry in getattr(pe, 'DIRECTORY_ENTRY_IMPORT', [])})
               except Exception as exc:
                   row['pe'] = False
                   row['pe_error'] = f'{type(exc).__name__}: {exc}'
@@ -147,10 +143,7 @@ jobs:
                   row['signature_error'] = f'{type(exc).__name__}: {exc}'
               rows.append(row)
 
-          (report_dir / 'candidate-files.json').write_text(
-              json.dumps(rows, ensure_ascii=False, indent=2), encoding='utf-8'
-          )
-
+          (report_dir / 'candidate-files.json').write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding='utf-8')
           with (report_dir / 'candidate-files.txt').open('w', encoding='utf-8') as out:
               for row in rows:
                   out.write(f"PATH={row['path']}\nSIZE={row['size']}\nSHA256={row['sha256']}\n")
