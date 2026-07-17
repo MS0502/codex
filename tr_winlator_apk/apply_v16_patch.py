@@ -138,21 +138,18 @@ def patch_v16(root: Path) -> None:
         raise RuntimeError("diagnostics v16 command summary anchor not found")
     text = text.replace(old_external, new_external, 1)
 
-    old_relevant = '''                || lower.contains("ntcreateuserprocess")
-                || lower.contains("createprocess") || lower.contains("process exit")
-                || lower.contains("terminateprocess") || lower.contains("exit code")
-                || lower.contains("service") || lower.contains("driver")
-'''
-    new_relevant = '''                || lower.contains("ntcreateuserprocess")
-                || lower.contains("createprocess") || lower.contains("new_process")
-                || lower.contains("process exit") || lower.contains("exit_process")
-                || lower.contains("terminateprocess") || lower.contains("terminate_process")
-                || lower.contains("process terminated") || lower.contains("exit code")
-                || lower.contains("service") || lower.contains("driver")
-'''
-    if old_relevant not in text:
-        raise RuntimeError("diagnostics v16 focused filter anchor not found")
-    text = text.replace(old_relevant, new_relevant, 1)
+    focused_replacements = {
+        '                || lower.contains("createprocess") || lower.contains("process exit")\n':
+            '                || lower.contains("createprocess") || lower.contains("new_process")\n'
+            '                || lower.contains("process exit") || lower.contains("exit_process")\n',
+        '                || lower.contains("terminateprocess") || lower.contains("exit code")\n':
+            '                || lower.contains("terminateprocess") || lower.contains("terminate_process")\n'
+            '                || lower.contains("process terminated") || lower.contains("exit code")\n',
+    }
+    for old, new in focused_replacements.items():
+        if old not in text:
+            raise RuntimeError(f"diagnostics v16 focused filter anchor not found: {old!r}")
+        text = text.replace(old, new, 1)
 
     method_anchor = '''    private static boolean lowloadLogCandidate(File file) {
 '''
