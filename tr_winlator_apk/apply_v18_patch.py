@@ -72,17 +72,36 @@ def find_embedded_android_roots(tree: Path) -> set[bytes]:
     return found
 
 
+def ensure_supported_paths(tree: Path, label: str) -> None:
+    embedded = find_embedded_android_roots(tree)
+    unsupported = sorted(value for value in embedded if value not in {OLD_ROOT, ALIAS_ROOT})
+    if unsupported:
+        decoded = [value.decode("utf-8", errors="replace") for value in unsupported]
+        raise RuntimeError(f"{label} contains unsupported fixed Android rootfs paths: {decoded}")
+
+
+def relocate_tree(tree: Path, label: str) -> tuple[int, int, int]:
+    ensure_supported_paths(tree, label)
+    scanned, patched_files, occurrences = v9.patch_tree(tree)
+    remaining = find_embedded_android_roots(tree)
+    unsupported_remaining = sorted(value for value in remaining if value != ALIAS_ROOT)
+    if unsupported_remaining:
+        decoded = [value.decode("utf-8", errors="replace") for value in unsupported_remaining]
+        raise RuntimeError(f"{label} has unrelocated Android rootfs paths: {decoded}")
+    print(
+        f"{label} relocation scanned={scanned} patched_files={patched_files} "
+        f"occurrences={occurrences}"
+    )
+    return scanned, patched_files, occurrences
+
+
 def replace_rootfs_wine(root: Path, proton_root: Path) -> tuple[int, int, int, str]:
     archive = root / "app/src/main/assets/rootfs.tzst"
     if not archive.is_file():
         raise RuntimeError(f"missing rootfs archive: {archive}")
 
     validate_proton_tree(proton_root)
-    embedded = find_embedded_android_roots(proton_root)
-    unsupported = sorted(value for value in embedded if value not in {OLD_ROOT, ALIAS_ROOT})
-    if unsupported:
-        decoded = [value.decode("utf-8", errors="replace") for value in unsupported]
-        raise RuntimeError(f"Proton Wine contains unsupported fixed Android rootfs paths: {decoded}")
+    ensure_supported_paths(proton_root, "Proton Wine tree")
 
     with tempfile.TemporaryDirectory(prefix="tr-v18-rootfs-") as temp_name:
         temp = Path(temp_name)
@@ -98,13 +117,7 @@ def replace_rootfs_wine(root: Path, proton_root: Path) -> tuple[int, int, int, s
                 shutil.rmtree(destination)
         shutil.copytree(proton_root, destination, symlinks=True)
 
-        scanned, patched_files, occurrences = v9.patch_tree(destination)
-        remaining = find_embedded_android_roots(destination)
-        unsupported_remaining = sorted(value for value in remaining if value != ALIAS_ROOT)
-        if unsupported_remaining:
-            decoded = [value.decode("utf-8", errors="replace") for value in unsupported_remaining]
-            raise RuntimeError(f"unrelocated Proton Wine Android rootfs paths remain: {decoded}")
-
+        scanned, patched_files, occurrences = relocate_tree(destination, "embedded Proton Wine tree")
         v9.repack_tzst(tree, archive, "rootfs-v18-proton11.tar")
 
     digest = sha256(archive)
@@ -150,8 +163,11 @@ def patch_v18(root: Path, report: tuple[int, int, int, str]) -> None:
 
     rootfs_patcher = root / "app/src/main/java/com/winlator/core/TrCompatRootfsPatcher.java"
     text = rootfs_patcher.read_text(encoding="utf-8")
+    old_rootfs_revision = 'private static final String REVISION = "v9-full-rootfs-alias-1";'
+    if old_rootfs_revision not in text:
+        raise RuntimeError("v9 rootfs runtime revision anchor not found")
     text = text.replace(
-        'private static final String REVISION = "v9-full-rootfs-alias-1";',
+        old_rootfs_revision,
         f'private static final String REVISION = "{REVISION}";',
         1,
     )
@@ -167,13 +183,19 @@ def patch_v18(root: Path, report: tuple[int, int, int, str]) -> None:
         'public static final String MAIN_WINE_VERSION = "11.0";',
         1,
     )
+    legacy_from_identifier = '        if (identifier.equals(MAIN_WINE_INFO.identifier())) return MAIN_WINE_INFO;\n'
+    if legacy_from_identifier not in text:
+        raise RuntimeError("WineInfo legacy identifier anchor not found")
     text = text.replace(
-        '        if (identifier.equals(MAIN_WINE_INFO.identifier())) return MAIN_WINE_INFO;\n',
+        legacy_from_identifier,
         '        if (identifier.equals(MAIN_WINE_INFO.identifier()) || identifier.equals("wine-10.10-custom")) return MAIN_WINE_INFO;\n',
         1,
     )
+    legacy_main_check = '        return wineVersion == null ||wineVersion.equals(MAIN_WINE_INFO.identifier());\n'
+    if legacy_main_check not in text:
+        raise RuntimeError("WineInfo legacy main-version anchor not found")
     text = text.replace(
-        '        return wineVersion == null ||wineVersion.equals(MAIN_WINE_INFO.identifier());\n',
+        legacy_main_check,
         '        return wineVersion == null || wineVersion.equals(MAIN_WINE_INFO.identifier()) || wineVersion.equals("wine-10.10-custom");\n',
         1,
     )
@@ -201,6 +223,10 @@ def main() -> int:
     root = Path(sys.argv[1]).resolve()
     proton_root = Path(sys.argv[2]).resolve()
     component_dir = Path(sys.argv[3]).resolve()
+
+    validate_proton_tree(proton_root)
+    relocate_tree(proton_root, "source Proton Wine tree")
+    relocate_tree(component_dir, "Proton component set")
 
     saved_argv = sys.argv[:]
     try:
