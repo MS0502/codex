@@ -1,0 +1,292 @@
+name: Korean TalesRunner public client metadata research
+
+on:
+  push:
+    branches: [tr-korean-public-metadata-research]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect-korean-public-client:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install browser and inspection tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            curl unzip p7zip-full file osslsigncode python3-pip jq msitools
+          python3 -m pip install --break-system-packages playwright requests beautifulsoup4 pefile
+          python3 -m playwright install --with-deps chromium
+
+      - name: Discover public official download and updater endpoints
+        run: |
+          set -euo pipefail
+          mkdir -p research/kr/pages research/kr/report research/kr/downloads research/kr/extracted
+          cat > /tmp/discover_kr.py <<'PY'
+          from __future__ import annotations
+          import asyncio, json, re
+          from pathlib import Path
+          from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+          from playwright.async_api import async_playwright
+
+          OUT = Path('research/kr')
+          START_URLS = [
+              'https://www.talesrunner.co.kr/',
+              'http://www.talesrunner.co.kr/',
+              'https://tr-rhaon.oc.nhncloud.com/Talesrunner/hc/article/122/?lang=ko',
+          ]
+          SECRET_KEYS = {'token','access_token','id_token','refresh_token','auth','authkey','ticket','session','sessionkey','signature','sig','code','jwt','jwe'}
+
+          def sanitize_url(url: str) -> str:
+              try:
+                  p = urlsplit(url)
+                  query = []
+                  for k, v in parse_qsl(p.query, keep_blank_values=True):
+                      query.append((k, '[REDACTED]' if k.lower() in SECRET_KEYS else v))
+                  return urlunsplit((p.scheme, p.netloc, p.path, urlencode(query), ''))
+              except Exception:
+                  return '[INVALID_URL]'
+
+          async def main():
+              network = []
+              anchors = []
+              errors = []
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch(headless=True)
+                  context = await browser.new_context(
+                      locale='ko-KR',
+                      user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36'
+                  )
+                  page = await context.new_page()
+
+                  def record_response(resp):
+                      try:
+                          network.append({
+                              'url': sanitize_url(resp.url),
+                              'status': resp.status,
+                              'resource_type': resp.request.resource_type,
+                              'content_type': resp.headers.get('content-type',''),
+                              'content_length': resp.headers.get('content-length',''),
+                          })
+                      except Exception as exc:
+                          errors.append(f'response: {type(exc).__name__}: {exc}')
+
+                  page.on('response', record_response)
+
+                  for idx, url in enumerate(START_URLS):
+                      try:
+                          await page.goto(url, wait_until='networkidle', timeout=90000)
+                          await page.wait_for_timeout(3000)
+                          html = await page.content()
+                          (OUT / 'pages' / f'page-{idx}.html').write_text(html, encoding='utf-8')
+                          (OUT / 'pages' / f'page-{idx}.txt').write_text(await page.locator('body').inner_text(), encoding='utf-8')
+                          for item in await page.locator('a').evaluate_all("els => els.map(e => ({href:e.href,text:(e.innerText||'').trim()}))"):
+                              anchors.append({'source': sanitize_url(page.url), 'href': sanitize_url(item.get('href','')), 'text': item.get('text','')[:300]})
+
+                          # Open public links whose visible label or URL clearly indicates download/client/launcher.
+                          candidates = []
+                          for a in anchors[-500:]:
+                              hay = (a.get('text','') + ' ' + a.get('href','')).lower()
+                              if any(k in hay for k in ('다운로드','download','client','launcher','setup','설치')):
+                                  if a.get('href','').startswith(('http://','https://')):
+                                      candidates.append(a['href'])
+                          for href in list(dict.fromkeys(candidates))[:12]:
+                              try:
+                                  child = await context.new_page()
+                                  child.on('response', record_response)
+                                  await child.goto(href, wait_until='networkidle', timeout=90000)
+                                  await child.wait_for_timeout(2000)
+                                  anchors.extend([
+                                      {'source': sanitize_url(child.url), 'href': sanitize_url(x.get('href','')), 'text': x.get('text','')[:300]}
+                                      for x in await child.locator('a').evaluate_all("els => els.map(e => ({href:e.href,text:(e.innerText||'').trim()}))")
+                                  ])
+                                  await child.close()
+                              except Exception as exc:
+                                  errors.append(f'child {sanitize_url(href)}: {type(exc).__name__}: {exc}')
+                      except Exception as exc:
+                          errors.append(f'page {sanitize_url(url)}: {type(exc).__name__}: {exc}')
+                  await browser.close()
+
+              # Deduplicate and retain only public metadata.
+              seen = set(); net_out = []
+              for row in network:
+                  key = (row['url'], row['status'], row['resource_type'])
+                  if key not in seen:
+                      seen.add(key); net_out.append(row)
+              seen = set(); anchor_out = []
+              for row in anchors:
+                  key = (row['source'], row['href'], row['text'])
+                  if key not in seen:
+                      seen.add(key); anchor_out.append(row)
+
+              (OUT / 'report' / 'network.json').write_text(json.dumps(net_out, ensure_ascii=False, indent=2), encoding='utf-8')
+              (OUT / 'report' / 'anchors.json').write_text(json.dumps(anchor_out, ensure_ascii=False, indent=2), encoding='utf-8')
+              (OUT / 'report' / 'browser-errors.txt').write_text('\n'.join(errors)+'\n', encoding='utf-8')
+
+              pattern = re.compile(r'(?:\.exe|\.msi|\.zip|\.cab|\.7z|\.json|\.xml|\.ini|\.lst|\.manifest)(?:$|\?)|download|launcher|setup|patch|client|updater', re.I)
+              candidate_urls = []
+              for row in net_out:
+                  if pattern.search(row['url']): candidate_urls.append(row['url'])
+              for row in anchor_out:
+                  if pattern.search(row['href']): candidate_urls.append(row['href'])
+              (OUT / 'report' / 'candidate-urls.txt').write_text('\n'.join(dict.fromkeys(candidate_urls))+'\n', encoding='utf-8')
+
+          asyncio.run(main())
+          PY
+          python3 /tmp/discover_kr.py
+
+      - name: Download small public installer and manifest candidates
+        run: |
+          set -euo pipefail
+          cat > /tmp/download_candidates.py <<'PY'
+          from __future__ import annotations
+          import hashlib, json, re
+          from pathlib import Path
+          from urllib.parse import urlsplit, unquote
+          import requests
+
+          root = Path('research/kr')
+          urls = [x.strip() for x in (root/'report/candidate-urls.txt').read_text(encoding='utf-8').splitlines() if x.strip()]
+          allowed_suffix = ('.exe','.msi','.zip','.cab','.7z','.json','.xml','.ini','.lst','.manifest','.txt')
+          reports = []
+          session = requests.Session()
+          session.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131 Safari/537.36'
+
+          for idx, url in enumerate(urls[:100]):
+              try:
+                  p = urlsplit(url)
+                  host = p.netloc.lower()
+                  # Only public endpoints reached from official pages; exclude arbitrary external ad/social hosts.
+                  if not any(x in host for x in ('talesrunner','rhaon','nhncloud','ntruss','toast','cdn','cloudfront')):
+                      continue
+                  response = session.get(url, stream=True, timeout=45, allow_redirects=True)
+                  ct = response.headers.get('content-type','')
+                  cl = int(response.headers.get('content-length') or 0)
+                  final = response.url
+                  name = unquote(Path(urlsplit(final).path).name) or f'candidate-{idx}.bin'
+                  suffix_ok = name.lower().endswith(allowed_suffix)
+                  metadata_like = any(x in ct.lower() for x in ('json','xml','text','octet-stream','msi','zip','exe'))
+                  row = {'source_url': url, 'final_url': final, 'status': response.status_code, 'content_type': ct, 'content_length': cl, 'name': name}
+                  if response.status_code == 200 and metadata_like and (suffix_ok or cl <= 5_000_000) and (cl == 0 or cl <= 250_000_000):
+                      safe_name = re.sub(r'[^A-Za-z0-9._-]+','_',name)[:160]
+                      out = root/'downloads'/f'{idx:03d}_{safe_name}'
+                      h = hashlib.sha256(); size = 0
+                      with out.open('wb') as f:
+                          for chunk in response.iter_content(1024*1024):
+                              if not chunk: continue
+                              size += len(chunk)
+                              if size > 250_000_000:
+                                  raise RuntimeError('download exceeded 250 MB limit')
+                              h.update(chunk); f.write(chunk)
+                      row.update({'downloaded': True, 'size': size, 'sha256': h.hexdigest(), 'path': str(out)})
+                  reports.append(row)
+              except Exception as exc:
+                  reports.append({'source_url': url, 'error': f'{type(exc).__name__}: {exc}'})
+
+          (root/'report/download-results.json').write_text(json.dumps(reports, ensure_ascii=False, indent=2), encoding='utf-8')
+          with (root/'report/download-results.txt').open('w', encoding='utf-8') as f:
+              for row in reports:
+                  f.write(json.dumps(row, ensure_ascii=False)+'\n')
+          PY
+          python3 /tmp/download_candidates.py
+
+      - name: Extract and inspect downloaded public files without execution
+        run: |
+          set -euo pipefail
+          for src in research/kr/downloads/*; do
+            [ -f "$src" ] || continue
+            base="$(basename "$src")"
+            mkdir -p "research/kr/extracted/$base"
+            file "$src" >> research/kr/report/file-types.txt || true
+            7z l -slt "$src" > "research/kr/report/${base}.archive-list.txt" 2>&1 || true
+            7z x -y -o"research/kr/extracted/$base" "$src" > "research/kr/report/${base}.extract.txt" 2>&1 || true
+            msiinfo export "$src" Property > "research/kr/report/${base}.msi-property.txt" 2>&1 || true
+          done
+
+          cat > /tmp/inspect_kr.py <<'PY'
+          from __future__ import annotations
+          import datetime, hashlib, json, pathlib, subprocess
+          import pefile
+
+          roots = [pathlib.Path('research/kr/downloads'), pathlib.Path('research/kr/extracted')]
+          report = pathlib.Path('research/kr/report')
+          keywords = ('talesrunner','trgame','xign','xhunter','xldr','.xem','launcher','patch','updater','setup')
+          paths = []
+          for root in roots:
+              for path in root.rglob('*'):
+                  if path.is_file() and any(k in path.name.lower() for k in keywords): paths.append(path)
+
+          def sha(path):
+              h=hashlib.sha256()
+              with path.open('rb') as f:
+                  for c in iter(lambda:f.read(1024*1024),b''): h.update(c)
+              return h.hexdigest()
+
+          def dec(v):
+              if isinstance(v,bytes):
+                  for e in ('utf-8','utf-16le','cp949','cp1252'):
+                      try:return v.decode(e).rstrip('\x00')
+                      except:pass
+                  return v.hex()
+              return str(v)
+
+          rows=[]
+          for path in sorted(set(paths),key=lambda p:str(p).lower()):
+              row={'path':str(path),'size':path.stat().st_size,'sha256':sha(path)}
+              try:
+                  pe=pefile.PE(str(path),fast_load=False); row['pe']=True; row['machine']=hex(pe.FILE_HEADER.Machine)
+                  row['compile_timestamp_utc']=datetime.datetime.fromtimestamp(pe.FILE_HEADER.TimeDateStamp,datetime.timezone.utc).isoformat()
+                  version={}
+                  for group in getattr(pe,'FileInfo',[]) or []:
+                      for item in group:
+                          if getattr(item,'Key',b'')==b'StringFileInfo':
+                              for table in item.StringTable:
+                                  version.update({dec(k):dec(v) for k,v in table.entries.items()})
+                  row['version_info']=version
+              except Exception as exc: row['pe']=False; row['pe_error']=f'{type(exc).__name__}: {exc}'
+              try:
+                  proc=subprocess.run(['osslsigncode','verify','-in',str(path)],text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=30)
+                  row['signature_summary']=[line.strip() for line in proc.stdout.splitlines() if any(k in line for k in ('Subject:','Issuer :','Signing time:','Number of verified signatures:','Signature verification:'))]
+              except Exception as exc: row['signature_error']=f'{type(exc).__name__}: {exc}'
+              rows.append(row)
+          (report/'candidate-files.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2),encoding='utf-8')
+          with (report/'candidate-files.txt').open('w',encoding='utf-8') as f:
+              for row in rows:
+                  f.write(f"PATH={row['path']}\nSIZE={row['size']}\nSHA256={row['sha256']}\nPE={row.get('pe')} MACHINE={row.get('machine')} COMPILE_UTC={row.get('compile_timestamp_utc')}\n")
+                  for k,v in sorted(row.get('version_info',{}).items()): f.write(f"VERSION_{k}={v}\n")
+                  for line in row.get('signature_summary',[]): f.write(f"SIGNATURE={line}\n")
+                  f.write('\n')
+          PY
+          python3 /tmp/inspect_kr.py
+          find research/kr/extracted -type f -printf '%s\t%p\n' | sort -n > research/kr/report/all-extracted-files.txt
+
+      - name: Build metadata-only summary
+        run: |
+          set -euo pipefail
+          {
+            echo '=== CANDIDATE URLS DISCOVERED FROM OFFICIAL PAGES ==='
+            cat research/kr/report/candidate-urls.txt || true
+            echo
+            echo '=== PUBLIC DOWNLOAD RESULTS ==='
+            cat research/kr/report/download-results.txt || true
+            echo
+            echo '=== INSTALLER / CLIENT METADATA ==='
+            cat research/kr/report/candidate-files.txt || true
+          } | tee research/kr/report/KOREAN_TR_PUBLIC_METADATA_SUMMARY.txt
+
+      - name: Upload reports only
+        uses: actions/upload-artifact@v4
+        with:
+          name: KOREAN_TR_PUBLIC_METADATA_REPORT
+          path: research/kr/report/*
+          if-no-files-found: error
+          retention-days: 30
