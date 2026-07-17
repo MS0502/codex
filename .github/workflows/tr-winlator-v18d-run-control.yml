@@ -1,0 +1,41 @@
+name: TR Winlator v18d run control
+
+on:
+  pull_request:
+    branches: [tr-wine-compat-baseline-v12]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  control-v18d:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cancel obsolete v18d runs and show latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sleep 15
+          WORKFLOW='tr-winlator-v18d-proton11-source.yml'
+          BRANCH='tr-wine-compat-proton11-source-v18d'
+          JSON="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "repos/$GH_REPO/actions/workflows/$WORKFLOW/runs?branch=$BRANCH&per_page=30")"
+          echo "$JSON" | jq '{total_count: .total_count, runs: [.workflow_runs[] | {id, status, conclusion, run_number, head_sha, created_at, html_url}]}'
+          LATEST="$(echo "$JSON" | jq -r '.workflow_runs | sort_by(.created_at) | last | .id // empty')"
+          test -n "$LATEST"
+          echo "V18D_LATEST_RUN_ID=$LATEST"
+          echo "$JSON" | jq -r --arg latest "$LATEST" \
+            '.workflow_runs[] | select((.status == "queued" or .status == "in_progress" or .status == "pending") and (.id|tostring) != $latest) | .id' \
+            | while read -r id; do
+                [ -n "$id" ] || continue
+                echo "Cancelling obsolete v18d run $id"
+                gh api --method POST "repos/$GH_REPO/actions/runs/$id/cancel" || true
+              done
+          gh api "repos/$GH_REPO/actions/runs/$LATEST/jobs?per_page=100" \
+            --jq '.jobs[] | {id, name, status, conclusion, steps: [.steps[] | {number, name, status, conclusion}]}'

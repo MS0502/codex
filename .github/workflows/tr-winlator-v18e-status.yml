@@ -1,0 +1,26 @@
+name: TR Winlator v18e status
+
+on:
+  pull_request:
+    branches: [tr-wine-compat-baseline-v12]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  status:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Show latest v18e run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sleep 12
+          gh api "repos/$GH_REPO/actions/workflows/tr-winlator-v18e-proton11-source-fixed.yml/runs?branch=tr-wine-compat-proton11-source-v18d&per_page=1" \
+            --jq '.workflow_runs[0] | {id,status,conclusion,run_number,head_sha,created_at,updated_at}'
+          RUN_ID="$(gh api "repos/$GH_REPO/actions/workflows/tr-winlator-v18e-proton11-source-fixed.yml/runs?branch=tr-wine-compat-proton11-source-v18d&per_page=1" --jq '.workflow_runs[0].id')"
+          gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+            --jq '.jobs[] | {id,name,status,conclusion,steps:[.steps[]? | {number,name,status,conclusion}]}'
