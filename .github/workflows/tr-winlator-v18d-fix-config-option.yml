@@ -1,4 +1,4 @@
-name: Fix v18d Proton configure option
+name: Fix v18e Wine tree normalization
 
 on:
   push:
@@ -11,26 +11,75 @@ permissions:
   actions: read
 
 jobs:
-  fix-option:
+  fix-normalization:
     runs-on: ubuntu-24.04
     steps:
-      - name: Replace invalid configure flag and trigger v18d
+      - name: Select the packaged Proton Wine tree directly
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           BRANCH: tr-wine-compat-proton11-source-v18d
-          TARGET: .github/workflows/tr-winlator-v18d-proton11-source.yml
+          TARGET: .github/workflows/tr-winlator-v18e-proton11-source-fixed.yml
         run: |
           set -euo pipefail
           META="$(gh api "repos/$GH_REPO/contents/$TARGET?ref=$BRANCH")"
           SHA="$(printf '%s' "$META" | jq -r '.sha')"
           printf '%s' "$META" | jq -r '.content' | tr -d '\n' | base64 -d > workflow.yml
-          grep -F -- '--enable-cache' workflow.yml
-          sed -i 's/--enable-cache/--enable-ccache/' workflow.yml
-          grep -F -- '--enable-ccache' workflow.yml
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('workflow.yml')
+          text = path.read_text(encoding='utf-8')
+          old = """          build = Path('proton-build')
+          candidates = []
+          for wine in build.rglob('bin/wine'):
+              root = wine.parent.parent
+              lib_candidates = [root / 'lib/wine', root / 'lib64/wine']
+              wine_lib = next((p for p in lib_candidates if p.is_dir()), None)
+              if wine_lib is None:
+                  continue
+              required = (
+                  root / 'bin/wineserver',
+                  wine_lib / 'x86_64-unix/ntdll.so',
+                  wine_lib / 'x86_64-windows/wow64.dll',
+                  wine_lib / 'x86_64-unix/nsiproxy.so',
+                  wine_lib / 'x86_64-windows/ntoskrnl.exe',
+              )
+              if all(p.is_file() for p in required):
+                  candidates.append(root)
+
+          unique = []
+          seen = set()
+          for item in candidates:
+              resolved = item.resolve()
+              if resolved not in seen:
+                  seen.add(resolved)
+                  unique.append(item)
+          if len(unique) != 1:
+              raise SystemExit(f'expected one complete Proton Wine tree, found: {unique}')
+
+          source = unique[0]
+"""
+          new = """          source = Path('proton-build/dist/files')
+          if not source.is_dir():
+              raise SystemExit(f'packaged Proton Wine tree missing: {source}')
+"""
+          if old not in text:
+              raise SystemExit('v18e normalization anchor not found')
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          grep -F "source = Path('proton-build/dist/files')" workflow.yml
+          if grep -F 'expected one complete Proton Wine tree' workflow.yml; then
+            echo 'old ambiguous tree selection remains' >&2
+            exit 1
+          fi
+
           CONTENT="$(base64 -w0 workflow.yml)"
           jq -n \
-            --arg message 'fix Proton 11 configure ccache flag' \
+            --arg message 'fix v18e packaged Wine tree selection' \
             --arg content "$CONTENT" \
             --arg sha "$SHA" \
             --arg branch "$BRANCH" \
