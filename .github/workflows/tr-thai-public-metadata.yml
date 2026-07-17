@@ -1,0 +1,184 @@
+name: Thai TalesRunner public client metadata research
+
+on:
+  push:
+    branches: [tr-thai-public-metadata-research]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect-public-clients:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install inspection tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            curl unzip p7zip-full file osslsigncode python3-pip jq
+          python3 -m pip install --break-system-packages pefile
+
+      - name: Download official Thai TalesRunner small public packages
+        run: |
+          set -euo pipefail
+          mkdir -p research/downloads research/extracted research/report
+
+          download_one() {
+            name="$1"
+            url="$2"
+            out="research/downloads/$3"
+            echo "SOURCE_NAME=$name" | tee -a research/report/downloads.txt
+            echo "SOURCE_URL=$url" | tee -a research/report/downloads.txt
+            curl -fL --retry 5 --retry-delay 3 --connect-timeout 30 \
+              -D "research/report/${name}.headers.txt" \
+              -o "$out" "$url"
+            echo "FINAL_URL=$(curl -Ls -o /dev/null -w '%{url_effective}' "$url")" | tee -a research/report/downloads.txt
+            stat -c 'SIZE=%s' "$out" | tee -a research/report/downloads.txt
+            sha256sum "$out" | tee -a research/report/downloads.txt
+            file "$out" | tee -a research/report/downloads.txt
+            echo | tee -a research/report/downloads.txt
+          }
+
+          # Both links are linked from the current official Thai publisher download page.
+          download_one thai_mini_zip 'https://talesrunner.gg/download-Minizip' 'thai_mini_package.bin'
+          download_one thai_installer 'https://talesrunner.gg/download-fullclient' 'thai_installer_package.bin'
+
+      - name: Extract packages without executing them
+        run: |
+          set -euo pipefail
+          for src in research/downloads/*; do
+            base="$(basename "$src")"
+            dst="research/extracted/$base"
+            mkdir -p "$dst"
+            7z l -slt "$src" > "research/report/${base}.archive-list.txt" 2>&1 || true
+            7z x -y -o"$dst" "$src" > "research/report/${base}.extract.txt" 2>&1 || true
+          done
+          find research/extracted -type f -printf '%s\t%p\n' | sort -n > research/report/all-extracted-files.txt
+
+      - name: Produce XIGNCODE and PE metadata report
+        run: |
+          set -euo pipefail
+          cat > /tmp/inspect_pe.py <<'PY'
+          from __future__ import annotations
+          import datetime, hashlib, json, pathlib, subprocess
+          import pefile
+
+          root = pathlib.Path('research/extracted')
+          report_dir = pathlib.Path('research/report')
+          report_dir.mkdir(parents=True, exist_ok=True)
+
+          keywords = ('xign', 'xhunter', 'xldr', '.xem', 'talesrunner', 'trgame', 'launcher', 'patch')
+          candidates = []
+          for path in root.rglob('*'):
+              if not path.is_file():
+                  continue
+              lower = path.name.lower()
+              if any(k in lower for k in keywords):
+                  candidates.append(path)
+
+          def sha256(path: pathlib.Path) -> str:
+              h = hashlib.sha256()
+              with path.open('rb') as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          def decode(value):
+              if isinstance(value, bytes):
+                  for enc in ('utf-8', 'utf-16le', 'cp1252'):
+                      try:
+                          return value.decode(enc).rstrip('\x00')
+                      except Exception:
+                          pass
+                  return value.hex()
+              return str(value)
+
+          rows = []
+          for path in sorted(candidates, key=lambda p: str(p).lower()):
+              row = {'path': str(path), 'size': path.stat().st_size, 'sha256': sha256(path)}
+              try:
+                  pe = pefile.PE(str(path), fast_load=False)
+                  row['pe'] = True
+                  row['machine'] = hex(pe.FILE_HEADER.Machine)
+                  row['compile_timestamp_utc'] = datetime.datetime.fromtimestamp(
+                      pe.FILE_HEADER.TimeDateStamp, datetime.timezone.utc
+                  ).isoformat()
+                  version = {}
+                  if hasattr(pe, 'FileInfo'):
+                      for group in pe.FileInfo or []:
+                          for item in group:
+                              if getattr(item, 'Key', b'') == b'StringFileInfo':
+                                  for table in item.StringTable:
+                                      for k, v in table.entries.items():
+                                          version[decode(k)] = decode(v)
+                  row['version_info'] = version
+                  row['imports'] = sorted({decode(entry.dll) for entry in getattr(pe, 'DIRECTORY_ENTRY_IMPORT', [])})
+              except Exception as exc:
+                  row['pe'] = False
+                  row['pe_error'] = f'{type(exc).__name__}: {exc}'
+
+              try:
+                  proc = subprocess.run(
+                      ['osslsigncode', 'verify', '-in', str(path)],
+                      text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30
+                  )
+                  signature_lines = []
+                  for line in proc.stdout.splitlines():
+                      if any(key in line for key in (
+                          'Subject:', 'Issuer :', 'Signing time:', 'Number of verified signatures:',
+                          'Signature verification:', 'Message digest algorithm', 'Current PE checksum'
+                      )):
+                          signature_lines.append(line.strip())
+                  row['signature_summary'] = signature_lines
+                  row['signature_exit'] = proc.returncode
+              except Exception as exc:
+                  row['signature_error'] = f'{type(exc).__name__}: {exc}'
+              rows.append(row)
+
+          (report_dir / 'candidate-files.json').write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding='utf-8')
+          with (report_dir / 'candidate-files.txt').open('w', encoding='utf-8') as out:
+              for row in rows:
+                  out.write(f"PATH={row['path']}\nSIZE={row['size']}\nSHA256={row['sha256']}\n")
+                  out.write(f"PE={row.get('pe')} MACHINE={row.get('machine')} COMPILE_UTC={row.get('compile_timestamp_utc')}\n")
+                  for k, v in sorted(row.get('version_info', {}).items()):
+                      out.write(f"VERSION_{k}={v}\n")
+                  for line in row.get('signature_summary', []):
+                      out.write(f"SIGNATURE={line}\n")
+                  out.write('\n')
+
+          with (report_dir / 'xigncode-name-inventory.txt').open('w', encoding='utf-8') as out:
+              for path in sorted(root.rglob('*'), key=lambda p: str(p).lower()):
+                  if path.is_file() and any(k in path.name.lower() for k in ('xign', 'xhunter', 'xldr', '.xem')):
+                      out.write(f"{path.stat().st_size}\t{path}\n")
+          PY
+          python3 /tmp/inspect_pe.py
+
+      - name: Summarize evidence only
+        run: |
+          set -euo pipefail
+          {
+            echo '=== OFFICIAL SOURCE DOWNLOADS ==='
+            cat research/report/downloads.txt
+            echo
+            echo '=== XIGNCODE NAME INVENTORY ==='
+            cat research/report/xigncode-name-inventory.txt || true
+            echo
+            echo '=== CANDIDATE METADATA ==='
+            cat research/report/candidate-files.txt || true
+          } | tee research/report/THAI_TR_PUBLIC_METADATA_SUMMARY.txt
+
+      - name: Upload reports only
+        uses: actions/upload-artifact@v4
+        with:
+          name: THAI_TR_PUBLIC_METADATA_REPORT
+          path: research/report/*
+          if-no-files-found: error
+          retention-days: 30
