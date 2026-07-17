@@ -1,0 +1,286 @@
+name: Korean TalesRunner public metadata research v2
+
+on:
+  push:
+    branches: [tr-korean-public-metadata-research]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect-korean-public-client-v2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            curl unzip p7zip-full file osslsigncode python3-pip jq msitools
+          python3 -m pip install --break-system-packages playwright requests beautifulsoup4 pefile
+          python3 -m playwright install --with-deps chromium
+
+      - name: Discover official Rhaon download flow
+        run: |
+          set -euo pipefail
+          mkdir -p research/kr-v2/pages research/kr-v2/report research/kr-v2/downloads research/kr-v2/extracted
+          cat > /tmp/discover_kr_v2.py <<'PY'
+          from __future__ import annotations
+          import asyncio, json, re
+          from pathlib import Path
+          from urllib.parse import urljoin, urlsplit, urlunsplit, parse_qsl, urlencode
+          from playwright.async_api import async_playwright
+
+          OUT = Path('research/kr-v2')
+          START_URLS = [
+              'https://tr.rhaon.co.kr/',
+              'https://tr-rhaon.oc.nhncloud.com/Talesrunner/hc/article/122/?lang=ko',
+              'https://tr-rhaon.oc.nhncloud.com/Talesrunner/hc/article/125/?lang=ko',
+          ]
+          SECRET_KEYS = {'token','access_token','id_token','refresh_token','auth','authkey','ticket','session','sessionkey','signature','sig','code','jwt','jwe'}
+          OFFICIAL_HINTS = ('rhaon.co.kr','talesrunner.co.kr','rhaon','nhncloud','ntruss','toast','cloudfront','trdown')
+
+          def sanitize_url(url: str) -> str:
+              try:
+                  p = urlsplit(url)
+                  query=[]
+                  for k,v in parse_qsl(p.query,keep_blank_values=True):
+                      query.append((k,'[REDACTED]' if k.lower() in SECRET_KEYS else v))
+                  return urlunsplit((p.scheme,p.netloc,p.path,urlencode(query),''))
+              except Exception:
+                  return '[INVALID_URL]'
+
+          def interesting(text: str) -> bool:
+              return bool(re.search(r'다운로드|download|launcher|setup|install|client|patch|updater|manifest|\.exe|\.msi|\.zip|\.cab|\.7z|\.json|\.xml|\.ini|\.lst', text, re.I))
+
+          async def main():
+              responses=[]; anchors=[]; errors=[]; text_blobs=[]
+              async with async_playwright() as p:
+                  browser=await p.chromium.launch(headless=True)
+                  context=await browser.new_context(locale='ko-KR', user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36')
+
+                  async def inspect_page(url: str, tag: str):
+                      page=await context.new_page()
+                      async def on_response(resp):
+                          try:
+                              row={'url':sanitize_url(resp.url),'status':resp.status,'resource_type':resp.request.resource_type,'content_type':resp.headers.get('content-type',''),'content_length':resp.headers.get('content-length','')}
+                              responses.append(row)
+                              host=urlsplit(resp.url).netloc.lower()
+                              if resp.status==200 and any(h in host for h in OFFICIAL_HINTS) and ('javascript' in row['content_type'] or resp.url.lower().endswith(('.js','.json','.xml','.ini','.lst','.manifest'))):
+                                  try:
+                                      body=await resp.text()
+                                      if len(body)<=5_000_000:
+                                          text_blobs.append({'source':sanitize_url(resp.url),'text':body})
+                                  except Exception:
+                                      pass
+                          except Exception as exc:
+                              errors.append(f'response {tag}: {type(exc).__name__}: {exc}')
+                      page.on('response', on_response)
+                      try:
+                          await page.goto(url, wait_until='domcontentloaded', timeout=45000)
+                          await page.wait_for_timeout(8000)
+                          html=await page.content()
+                          body=await page.locator('body').inner_text(timeout=10000)
+                          (OUT/'pages'/f'{tag}.html').write_text(html,encoding='utf-8')
+                          (OUT/'pages'/f'{tag}.txt').write_text(body,encoding='utf-8')
+                          text_blobs.append({'source':sanitize_url(page.url),'text':html})
+                          items=await page.locator('a').evaluate_all("els => els.map(e => ({href:e.href,text:(e.innerText||'').trim(),onclick:e.getAttribute('onclick')||''}))")
+                          for item in items:
+                              anchors.append({'source':sanitize_url(page.url),'href':sanitize_url(item.get('href','')),'text':item.get('text','')[:300],'onclick':item.get('onclick','')[:500]})
+
+                          # Click public download-looking controls without entering credentials.
+                          controls=page.locator('a,button')
+                          count=min(await controls.count(),250)
+                          for i in range(count):
+                              el=controls.nth(i)
+                              try:
+                                  label=((await el.inner_text(timeout=500)) or '')+' '+((await el.get_attribute('href')) or '')+' '+((await el.get_attribute('onclick')) or '')
+                                  if not interesting(label):
+                                      continue
+                                  async with page.expect_download(timeout=5000) as dl_info:
+                                      await el.click(timeout=3000,force=True)
+                                  dl=await dl_info.value
+                                  errors.append(f'DOWNLOAD_EVENT suggested={dl.suggested_filename} url={sanitize_url(dl.url)}')
+                              except Exception:
+                                  pass
+                      except Exception as exc:
+                          errors.append(f'page {sanitize_url(url)}: {type(exc).__name__}: {exc}')
+                      finally:
+                          await page.close()
+
+                  for idx,url in enumerate(START_URLS):
+                      await inspect_page(url,f'start-{idx}')
+
+                  # Follow public same-ecosystem links one level deep.
+                  follow=[]
+                  for a in anchors:
+                      href=a.get('href','')
+                      host=urlsplit(href).netloc.lower()
+                      hay=' '.join((a.get('text',''),href,a.get('onclick','')))
+                      if href.startswith(('http://','https://')) and any(h in host for h in OFFICIAL_HINTS) and interesting(hay):
+                          follow.append(href)
+                  for idx,url in enumerate(list(dict.fromkeys(follow))[:20]):
+                      await inspect_page(url,f'follow-{idx}')
+                  await browser.close()
+
+              # Extract URL-like strings from captured official HTML/JS/JSON.
+              url_re=re.compile(r'https?://[^\s"\'<>\\]+',re.I)
+              rel_re=re.compile(r'["\']([^"\']*(?:download|launcher|setup|patch|updater|manifest|client)[^"\']*|[^"\']+\.(?:exe|msi|zip|cab|7z|json|xml|ini|lst|manifest)(?:\?[^"\']*)?)["\']',re.I)
+              candidates=[]
+              for row in responses:
+                  if interesting(row['url']): candidates.append(row['url'])
+              for row in anchors:
+                  if interesting(' '.join((row.get('text',''),row.get('href',''),row.get('onclick','')))): candidates.append(row.get('href',''))
+              for blob in text_blobs:
+                  base=blob['source']; text=blob['text']
+                  candidates.extend(sanitize_url(x) for x in url_re.findall(text))
+                  for x in rel_re.findall(text):
+                      candidates.append(sanitize_url(urljoin(base,x)))
+              candidates=[x for x in dict.fromkeys(candidates) if x.startswith(('http://','https://')) and any(h in urlsplit(x).netloc.lower() for h in OFFICIAL_HINTS) and interesting(x)]
+
+              (OUT/'report'/'network.json').write_text(json.dumps(responses,ensure_ascii=False,indent=2),encoding='utf-8')
+              (OUT/'report'/'anchors.json').write_text(json.dumps(anchors,ensure_ascii=False,indent=2),encoding='utf-8')
+              (OUT/'report'/'candidate-urls.txt').write_text('\n'.join(candidates)+'\n',encoding='utf-8')
+              (OUT/'report'/'browser-events-errors.txt').write_text('\n'.join(errors)+'\n',encoding='utf-8')
+
+          asyncio.run(main())
+          PY
+          python3 /tmp/discover_kr_v2.py
+
+      - name: Download public small candidates
+        run: |
+          set -euo pipefail
+          cat > /tmp/download_kr_v2.py <<'PY'
+          from __future__ import annotations
+          import hashlib,json,re
+          from pathlib import Path
+          from urllib.parse import urlsplit,unquote,parse_qsl,urlunsplit,urlencode
+          import requests
+
+          root=Path('research/kr-v2')
+          urls=[x.strip() for x in (root/'report/candidate-urls.txt').read_text(encoding='utf-8').splitlines() if x.strip()]
+          SECRET={'token','access_token','id_token','refresh_token','auth','authkey','ticket','session','sessionkey','signature','sig','code','jwt','jwe'}
+          def clean(url):
+              p=urlsplit(url); q=[(k,'[REDACTED]' if k.lower() in SECRET else v) for k,v in parse_qsl(p.query,keep_blank_values=True)]
+              return urlunsplit((p.scheme,p.netloc,p.path,urlencode(q),''))
+          s=requests.Session(); s.headers['User-Agent']='Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131 Safari/537.36'
+          reports=[]
+          for idx,url in enumerate(urls[:150]):
+              try:
+                  r=s.get(url,stream=True,timeout=60,allow_redirects=True)
+                  cl=int(r.headers.get('content-length') or 0); ct=r.headers.get('content-type',''); final=r.url
+                  name=unquote(Path(urlsplit(final).path).name) or f'candidate-{idx}.bin'
+                  row={'source_url':clean(url),'final_url':clean(final),'status':r.status_code,'content_type':ct,'content_length':cl,'name':name}
+                  downloadable=r.status_code==200 and (cl==0 or cl<=250_000_000) and (name.lower().endswith(('.exe','.msi','.zip','.cab','.7z','.json','.xml','.ini','.lst','.manifest','.txt')) or cl<=5_000_000)
+                  if downloadable:
+                      out=root/'downloads'/f'{idx:03d}_{re.sub(r"[^A-Za-z0-9._-]+","_",name)[:150]}'
+                      h=hashlib.sha256(); size=0
+                      with out.open('wb') as f:
+                          for c in r.iter_content(1024*1024):
+                              if not c: continue
+                              size+=len(c)
+                              if size>250_000_000: raise RuntimeError('over size limit')
+                              h.update(c); f.write(c)
+                      row.update({'downloaded':True,'size':size,'sha256':h.hexdigest(),'path':str(out)})
+                  reports.append(row)
+              except Exception as exc:
+                  reports.append({'source_url':clean(url),'error':f'{type(exc).__name__}: {exc}'})
+          (root/'report'/'download-results.json').write_text(json.dumps(reports,ensure_ascii=False,indent=2),encoding='utf-8')
+          (root/'report'/'download-results.txt').write_text('\n'.join(json.dumps(x,ensure_ascii=False) for x in reports)+'\n',encoding='utf-8')
+          PY
+          python3 /tmp/download_kr_v2.py
+
+      - name: Extract and inspect metadata only
+        run: |
+          set -euo pipefail
+          for src in research/kr-v2/downloads/*; do
+            [ -f "$src" ] || continue
+            base="$(basename "$src")"
+            mkdir -p "research/kr-v2/extracted/$base"
+            file "$src" >> research/kr-v2/report/file-types.txt || true
+            7z l -slt "$src" > "research/kr-v2/report/${base}.archive-list.txt" 2>&1 || true
+            7z x -y -o"research/kr-v2/extracted/$base" "$src" > "research/kr-v2/report/${base}.extract.txt" 2>&1 || true
+            msiinfo export "$src" Property > "research/kr-v2/report/${base}.msi-property.txt" 2>&1 || true
+          done
+
+          cat > /tmp/inspect_kr_v2.py <<'PY'
+          from __future__ import annotations
+          import datetime,hashlib,json,pathlib,subprocess
+          import pefile
+          roots=[pathlib.Path('research/kr-v2/downloads'),pathlib.Path('research/kr-v2/extracted')]
+          report=pathlib.Path('research/kr-v2/report')
+          keys=('talesrunner','trgame','xign','xhunter','xldr','.xem','launcher','patch','updater','setup')
+          paths=[]
+          for root in roots:
+              for p in root.rglob('*'):
+                  if p.is_file() and any(k in p.name.lower() for k in keys): paths.append(p)
+          def sha(p):
+              h=hashlib.sha256()
+              with p.open('rb') as f:
+                  for c in iter(lambda:f.read(1024*1024),b''):h.update(c)
+              return h.hexdigest()
+          def dec(v):
+              if isinstance(v,bytes):
+                  for e in ('utf-8','utf-16le','cp949','cp1252'):
+                      try:return v.decode(e).rstrip('\x00')
+                      except Exception:pass
+                  return v.hex()
+              return str(v)
+          rows=[]
+          for p in sorted(set(paths),key=lambda x:str(x).lower()):
+              row={'path':str(p),'size':p.stat().st_size,'sha256':sha(p)}
+              try:
+                  pe=pefile.PE(str(p),fast_load=False);row['pe']=True;row['machine']=hex(pe.FILE_HEADER.Machine);row['compile_timestamp_utc']=datetime.datetime.fromtimestamp(pe.FILE_HEADER.TimeDateStamp,datetime.timezone.utc).isoformat()
+                  version={}
+                  for group in getattr(pe,'FileInfo',[]) or []:
+                      for item in group:
+                          if getattr(item,'Key',b'')==b'StringFileInfo':
+                              for table in item.StringTable:version.update({dec(k):dec(v) for k,v in table.entries.items()})
+                  row['version_info']=version
+              except Exception as exc:row['pe']=False;row['pe_error']=f'{type(exc).__name__}: {exc}'
+              try:
+                  proc=subprocess.run(['osslsigncode','verify','-in',str(p)],text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=30)
+                  row['signature_summary']=[line.strip() for line in proc.stdout.splitlines() if any(k in line for k in ('Subject:','Issuer :','Signing time:','Number of verified signatures:','Signature verification:'))]
+              except Exception as exc:row['signature_error']=f'{type(exc).__name__}: {exc}'
+              rows.append(row)
+          (report/'candidate-files.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2),encoding='utf-8')
+          with (report/'candidate-files.txt').open('w',encoding='utf-8') as f:
+              for row in rows:
+                  f.write(f"PATH={row['path']}\nSIZE={row['size']}\nSHA256={row['sha256']}\nPE={row.get('pe')} MACHINE={row.get('machine')} COMPILE_UTC={row.get('compile_timestamp_utc')}\n")
+                  for k,v in sorted(row.get('version_info',{}).items()):f.write(f"VERSION_{k}={v}\n")
+                  for line in row.get('signature_summary',[]):f.write(f"SIGNATURE={line}\n")
+                  f.write('\n')
+          PY
+          python3 /tmp/inspect_kr_v2.py
+
+      - name: Build report
+        run: |
+          set -euo pipefail
+          {
+            echo '=== CANDIDATE URLS ==='
+            cat research/kr-v2/report/candidate-urls.txt || true
+            echo
+            echo '=== DOWNLOAD RESULTS ==='
+            cat research/kr-v2/report/download-results.txt || true
+            echo
+            echo '=== CLIENT METADATA ==='
+            cat research/kr-v2/report/candidate-files.txt || true
+            echo
+            echo '=== BROWSER EVENTS / ERRORS ==='
+            cat research/kr-v2/report/browser-events-errors.txt || true
+          } | tee research/kr-v2/report/KOREAN_TR_PUBLIC_METADATA_V2_SUMMARY.txt
+
+      - name: Upload reports only
+        uses: actions/upload-artifact@v4
+        with:
+          name: KOREAN_TR_PUBLIC_METADATA_V2_REPORT
+          path: research/kr-v2/report/*
+          if-no-files-found: error
+          retention-days: 30
