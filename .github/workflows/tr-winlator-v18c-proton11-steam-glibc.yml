@@ -1,0 +1,313 @@
+name: TR Winlator v18c Steam Proton 11 glibc APK
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-glibc-v18b]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tr-winlator-v18c-proton11-steam-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-apk-v18c-proton11-steam:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            python3 git git-lfs ca-certificates curl jq unzip xz-utils zstd \
+            patchelf file binutils lib32gcc-s1 libc6-i386
+
+      - name: Set up Java 17 for sdkmanager
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK components
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platforms;android-34' 'build-tools;34.0.0' \
+            'cmake;3.22.1' 'ndk;24.0.8215888'
+
+      - name: Set up Java 11 for Android Gradle Plugin
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Fetch exact Winlator 11.1 source
+        run: |
+          set -euo pipefail
+          git init winlator-app
+          git -C winlator-app remote add origin https://github.com/brunodev85/winlator-app.git
+          git -C winlator-app fetch --depth 1 origin c2f4ad4534f4637b543a9a3b085e28f50cf6d01c
+          git -C winlator-app checkout --detach FETCH_HEAD
+          test "$(git -C winlator-app rev-parse HEAD)" = c2f4ad4534f4637b543a9a3b085e28f50cf6d01c
+          git -C winlator-app lfs pull
+          test -s winlator-app/app/src/main/assets/rootfs.tzst
+          sha256sum winlator-app/app/src/main/assets/rootfs.tzst | tee rootfs-source-sha256.txt
+
+      - name: Download official SteamCMD
+        run: |
+          set -euo pipefail
+          mkdir -p steamcmd
+          curl -fL --retry 5 --retry-delay 5 \
+            https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
+            -o steamcmd_linux.tar.gz
+          sha256sum steamcmd_linux.tar.gz | tee steamcmd-sha256.txt
+          tar -xzf steamcmd_linux.tar.gz -C steamcmd
+          test -x steamcmd/steamcmd.sh
+
+      - name: Download official Proton 11 Steam tool
+        run: |
+          set -euo pipefail
+          mkdir -p proton-steam
+          ABS_DEST="$PWD/proton-steam"
+          steamcmd/steamcmd.sh \
+            +@sSteamCmdForcePlatformType linux \
+            +force_install_dir "$ABS_DEST" \
+            +login anonymous \
+            +app_update 4628710 validate \
+            +quit 2>&1 | tee steamcmd-proton11.log
+
+          find proton-steam -maxdepth 5 -type f -o -type l | sort | sed -n '1,200p' \
+            | tee proton-steam-file-sample.txt
+          find proton-steam -name 'appmanifest_4628710.acf' -print -exec cat {} \; \
+            | tee proton-steam-appmanifest.txt
+          test -n "$(find proton-steam -path '*/files/bin/wine' -type f -print -quit)"
+
+      - name: Normalize Steam Proton glibc tree
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json
+          import os
+          import shutil
+          from pathlib import Path
+
+          raw = Path('proton-steam')
+          candidates = []
+          for wine in raw.rglob('files/bin/wine'):
+              files = wine.parent.parent
+              required = (
+                  files / 'bin/wineserver',
+                  files / 'lib64/wine/x86_64-unix/ntdll.so',
+                  files / 'lib64/wine/x86_64-windows/wow64.dll',
+                  files / 'lib64/wine/x86_64-windows/ntoskrnl.exe',
+              )
+              if all(path.is_file() for path in required):
+                  candidates.append(files)
+
+          unique = []
+          seen = set()
+          for candidate in candidates:
+              resolved = candidate.resolve()
+              if resolved not in seen:
+                  seen.add(resolved)
+                  unique.append(candidate)
+          if len(unique) != 1:
+              raise SystemExit(f'expected exactly one Steam Proton files tree, found {unique}')
+
+          source = unique[0]
+          destination = Path('proton-wine-tree')
+          shutil.copytree(source, destination, symlinks=True)
+
+          compat_wine = destination / 'lib/wine'
+          compat_wine.mkdir(parents=True, exist_ok=True)
+          for dirname in ('x86_64-unix', 'x86_64-windows'):
+              source_dir = destination / 'lib64/wine' / dirname
+              target = compat_wine / dirname
+              if not source_dir.is_dir():
+                  raise SystemExit(f'missing Steam Proton directory: {source_dir}')
+              if target.exists() or target.is_symlink():
+                  if target.is_symlink() or target.is_file():
+                      target.unlink()
+                  else:
+                      shutil.rmtree(target)
+              target.symlink_to(Path('../../lib64/wine') / dirname)
+
+          required = (
+              'bin/wine',
+              'bin/wineserver',
+              'lib/wine/x86_64-unix/ntdll.so',
+              'lib/wine/x86_64-windows/wow64.dll',
+              'lib/wine/x86_64-unix/nsiproxy.so',
+              'lib/wine/x86_64-windows/ntoskrnl.exe',
+          )
+          missing = [item for item in required if not (destination / item).is_file()]
+          if missing:
+              raise SystemExit(f'normalized Proton tree missing files: {missing}')
+
+          component_dir = Path('proton-components')
+          component_dir.mkdir()
+          mapping = {
+              'ntdll.so': 'lib/wine/x86_64-unix/ntdll.so',
+              'wow64.dll': 'lib/wine/x86_64-windows/wow64.dll',
+              'wineserver': 'bin/wineserver',
+              'nsiproxy.so': 'lib/wine/x86_64-unix/nsiproxy.so',
+          }
+          for name, relative in mapping.items():
+              shutil.copy2((destination / relative).resolve(), component_dir / name)
+
+          manifest = {
+              'steam_app_id': 4628710,
+              'steam_depot_id': 4628711,
+              'release_files_root': str(source),
+              'tree_files': sum(1 for path in destination.rglob('*') if path.is_file()),
+              'tree_symlinks': sum(1 for path in destination.rglob('*') if path.is_symlink()),
+              'wine_link': os.readlink(destination / 'bin/wine')
+                  if (destination / 'bin/wine').is_symlink() else '',
+              'winedevice_candidates': [
+                  str(path.relative_to(destination))
+                  for path in destination.rglob('*winedevice*') if path.is_file()
+              ],
+          }
+          Path('proton-tree-manifest.json').write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          PY
+
+          test -x proton-wine-tree/bin/wine
+          test -x proton-wine-tree/bin/wineserver
+          test -s proton-wine-tree/lib/wine/x86_64-windows/ntoskrnl.exe
+          sha256sum proton-components/* | tee proton-components-sha256.txt
+
+      - name: Prove glibc ABI before embedding
+        run: |
+          set -euo pipefail
+          WINE_REAL="$(readlink -f proton-wine-tree/bin/wine)"
+          file "$WINE_REAL" | tee proton-wine-file.txt
+          readelf -h "$WINE_REAL" | tee proton-wine-elf-header.txt
+          readelf -d "$WINE_REAL" | tee proton-wine-dynamic.txt
+          readelf -Ws "$WINE_REAL" | tee proton-wine-symbols.txt
+
+          if grep -w '__libc_init' proton-wine-symbols.txt; then
+            echo 'Bionic-only __libc_init dependency detected; refusing to build.' >&2
+            exit 1
+          fi
+          if ! grep -F 'Shared library: [libc.so.6]' proton-wine-dynamic.txt; then
+            echo 'Expected glibc libc.so.6 dependency not found.' >&2
+            exit 1
+          fi
+
+          LD_LIBRARY_PATH="$PWD/proton-wine-tree/lib64:$PWD/proton-wine-tree/lib:$PWD/proton-wine-tree/lib64/wine/x86_64-unix" \
+            proton-wine-tree/bin/wine --version | tee proton-wine-version.txt
+
+      - name: Apply and verify v18c Steam Proton runtime
+        run: |
+          set -euo pipefail
+          python3 tr_winlator_apk/apply_v18b_patch.py \
+            winlator-app proton-wine-tree proton-components 2>&1 | tee v18c-apply.log
+
+          grep -F 'versionName "11.1-trcompat18b-proton11-valve-glibc"' winlator-app/app/build.gradle
+          grep -F 'MAIN_WINE_VERSION = "11.0"' winlator-app/app/src/main/java/com/winlator/core/WineInfo.java
+          grep -F 'v18b-proton11-valve-glibc-1' winlator-app/app/src/main/java/com/winlator/core/TrCompatWinePatcher.java
+          cat winlator-app/v18b-proton-rootfs-report.txt
+
+          tar --use-compress-program=unzstd -tf winlator-app/app/src/main/assets/rootfs.tzst \
+            | sed 's#^\./##' > rootfs-v18c-file-list.txt
+          grep -Fx 'opt/wine/bin/wine' rootfs-v18c-file-list.txt
+          grep -Fx 'opt/wine/bin/wineserver' rootfs-v18c-file-list.txt
+          grep -Fx 'opt/wine/lib/wine/x86_64-windows/ntoskrnl.exe' rootfs-v18c-file-list.txt
+          grep -Fx 'opt/wine/lib/wine/x86_64-unix/ntdll.so' rootfs-v18c-file-list.txt
+          grep -Fx 'opt/wine/lib/wine/x86_64-windows/wow64.dll' rootfs-v18c-file-list.txt
+
+      - name: Restore persistent debug signing key
+        id: debug-key-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: trcompat-debug-keystore-v1
+
+      - name: Create debug signing key
+        if: steps.debug-key-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair -keystore "$HOME/.android/debug.keystore" \
+            -storepass android -alias androiddebugkey -keypass android \
+            -dname 'CN=Android Debug,O=Android,C=US' -keyalg RSA -keysize 2048 \
+            -validity 10000 -noprompt
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Build v18c APK
+        working-directory: winlator-app
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee ../apk-build-v18c-proton11-steam.log
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_V18C_PROTON11_STEAM_BUILD_LOG
+          path: |
+            apk-build-v18c-proton11-steam.log
+            v18c-apply.log
+            rootfs-source-sha256.txt
+            steamcmd-sha256.txt
+            steamcmd-proton11.log
+            proton-steam-appmanifest.txt
+            proton-steam-file-sample.txt
+            proton-tree-manifest.json
+            proton-components-sha256.txt
+            proton-wine-file.txt
+            proton-wine-elf-header.txt
+            proton-wine-dynamic.txt
+            proton-wine-symbols.txt
+            proton-wine-version.txt
+            rootfs-v18c-file-list.txt
+            winlator-app/v18b-proton-rootfs-report.txt
+            winlator-app/v9-rootfs-patch-report.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Collect v18c APK
+        run: |
+          set -euo pipefail
+          mkdir -p out-v18c
+          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk \
+            out-v18c/Winlator_11.1_TR_Compat_v18C_PROTON11_STEAM_GLIBC.apk
+          sha256sum out-v18c/Winlator_11.1_TR_Compat_v18C_PROTON11_STEAM_GLIBC.apk \
+            | tee out-v18c/SHA256SUMS.txt
+          cp proton-tree-manifest.json proton-wine-file.txt proton-wine-dynamic.txt \
+            proton-wine-version.txt proton-steam-appmanifest.txt \
+            winlator-app/v18b-proton-rootfs-report.txt out-v18c/
+          cat > out-v18c/README_KO.txt <<'EOF'
+          Winlator TR Compat v18c - official Steam Proton 11 glibc
+
+          GitHub 소스 아카이브가 아니라 Steam의 Proton 11.0 도구(App 4628710)를
+          SteamCMD로 내려받아 사용한다. Bionic __libc_init 의존성이 있으면 빌드를
+          중단하고, glibc libc.so.6 및 wine --version 실행을 통과해야 APK를 만든다.
+
+          기존 v18 앱과 컨테이너는 재사용하지 않는다.
+          EOF
+
+      - name: Upload v18c APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V18C_PROTON11_STEAM_GLIBC
+          path: out-v18c/*
+          if-no-files-found: error
+          retention-days: 30
