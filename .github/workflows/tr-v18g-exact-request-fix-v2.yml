@@ -155,3 +155,5 @@ jobs:
           git add .github/workflows/tr-winlator-v18g-proton11-android-tmp.yml
           git commit -m 'patch exact Proton 11 request.c wineserver path'
           git push origin HEAD:tr-wine-compat-proton11-android-tmp-v18g
+
+# trigger: exact-source-v2
