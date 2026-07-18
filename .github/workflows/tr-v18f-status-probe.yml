@@ -1,0 +1,40 @@
+name: TR v18f status probe
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-source-v18f]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tr-wine-compat-proton11-source-v18f
+
+      - name: Capture latest v18f run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sleep 20
+          mkdir -p tr_winlator_apk
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs?branch=tr-wine-compat-proton11-source-v18f&per_page=20" \
+            --jq '[.workflow_runs[] | select(.name == "TR Winlator v18f Proton 11 source final APK") | {id,run_number,status,conclusion,head_sha,created_at,updated_at,html_url}]' \
+            > tr_winlator_apk/V18F_LATEST_RUN.json
+          cat tr_winlator_apk/V18F_LATEST_RUN.json
+
+      - name: Commit status snapshot
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tr_winlator_apk/V18F_LATEST_RUN.json
+          git commit -m "Record latest v18f workflow run" || exit 0
+          git push origin HEAD:tr-wine-compat-proton11-source-v18f
