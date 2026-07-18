@@ -1,0 +1,119 @@
+name: Bootstrap TR Winlator v18g Android tmp fix
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-android-tmp-v18g]
+    paths:
+      - '.github/workflows/tr-v18g-bootstrap.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  generate-v18g-workflow:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tr-wine-compat-proton11-android-tmp-v18g
+
+      - name: Generate v18g workflow from proven v18f build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          BASE='.github/workflows/tr-winlator-v18f-proton11-source-final.yml'
+          OUT='.github/workflows/tr-winlator-v18g-proton11-android-tmp.yml'
+
+          gh api "repos/$GH_REPO/contents/$BASE?ref=tr-wine-compat-proton11-source-v18f" \
+            --jq '.content' | tr -d '\n' | base64 -d > /tmp/v18f.yml
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('/tmp/v18f.yml').read_text(encoding='utf-8')
+          source = source.replace('v18f', 'v18g').replace('V18F', 'V18G')
+          source = source.replace(
+              'tr-wine-compat-proton11-source-v18g',
+              'tr-wine-compat-proton11-android-tmp-v18g',
+          )
+          source = source.replace(
+              '            proton11-wine-source-v18e-${{ runner.os }}-${{ runner.arch }}\n',
+              '            proton11-wine-source-v18f-${{ runner.os }}-${{ runner.arch }}\n'
+              '            proton11-wine-source-v18e-${{ runner.os }}-${{ runner.arch }}\n',
+              1,
+          )
+
+          anchor = '      - name: Configure official Proton SDK\n'
+          patch_step = r'''      - name: Patch wineserver temp root for Android sandbox
+        run: |
+          set -euo pipefail
+          python3 - <<'PY2'
+          from pathlib import Path
+          import re
+
+          pattern = re.compile(
+              r'static\s+const\s+char\s+server_root_prefix\[\]\s*=\s*"/tmp/\.wine";'
+          )
+          matches = []
+          for path in Path('proton-src/wine').rglob('*.c'):
+              text = path.read_text(encoding='utf-8', errors='ignore')
+              if pattern.search(text):
+                  matches.append(path)
+
+          if len(matches) != 1:
+              raise SystemExit(f'expected one wineserver temp-root source, found: {matches}')
+
+          path = matches[0]
+          text = path.read_text(encoding='utf-8')
+          replacement = (
+              'static const char server_root_prefix[] = '
+              '"/data/user/0/com.winlator.trcompat/r/tmp/.wine";'
+          )
+          text, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f'wineserver temp-root replacement count={count}')
+          path.write_text(text, encoding='utf-8')
+
+          report = (
+              f'source={path}\n'
+              'old=/tmp/.wine-UID\n'
+              'new=/data/user/0/com.winlator.trcompat/r/tmp/.wine-UID\n'
+          )
+          Path('proton-wineserver-tmp-patch.txt').write_text(report, encoding='utf-8')
+          print(report)
+          PY2
+          grep -R -F '/data/user/0/com.winlator.trcompat/r/tmp/.wine' proton-src/wine
+
+'''
+          if anchor not in source:
+              raise SystemExit('configure step anchor missing')
+          source = source.replace(anchor, patch_step + anchor, 1)
+
+          source = source.replace(
+              '            proton-submodules.txt\n',
+              '            proton-submodules.txt\n'
+              '            proton-wineserver-tmp-patch.txt\n',
+              1,
+          )
+
+          out = Path('.github/workflows/tr-winlator-v18g-proton11-android-tmp.yml')
+          out.write_text(source, encoding='utf-8')
+          PY
+
+          grep -F 'name: TR Winlator v18g' "$OUT"
+          grep -F 'branches: [tr-wine-compat-proton11-android-tmp-v18g]' "$OUT"
+          grep -F '/data/user/0/com.winlator.trcompat/r/tmp/.wine' "$OUT"
+          grep -F 'WINLATOR_11_1_TR_COMPAT_APK_V18G_PROTON11_SOURCE_GLIBC' "$OUT"
+
+      - name: Commit generated workflow
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/workflows/tr-winlator-v18g-proton11-android-tmp.yml
+          git commit -m 'build v18g with Android-safe wineserver temp root'
+          git push origin HEAD:tr-wine-compat-proton11-android-tmp-v18g

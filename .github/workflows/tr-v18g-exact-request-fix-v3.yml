@@ -1,0 +1,68 @@
+name: Fix v18g exact wineserver source patch v3
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-android-tmp-v18g]
+    paths:
+      - '.github/workflows/tr-v18g-exact-request-fix-v3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix-workflow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tr-wine-compat-proton11-android-tmp-v18g
+
+      - name: Replace guessed patch with exact request.c patch
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64
+
+          path = Path('.github/workflows/tr-winlator-v18g-proton11-android-tmp.yml')
+          text = path.read_text(encoding='utf-8')
+          start_marker = '      - name: Patch wineserver temp root for Android sandbox\n'
+          end_marker = '      - name: Configure official Proton SDK\n'
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit('patch-step markers not found')
+
+          new_step = base64.b64decode('ICAgICAgLSBuYW1lOiBQYXRjaCBleGFjdCBQcm90b24gMTEgd2luZXNlcnZlciB0ZW1wLXJvb3QgYnJhbmNoCiAgICAgICAgcnVuOiB8CiAgICAgICAgICBzZXQgLWV1byBwaXBlZmFpbAogICAgICAgICAgcHl0aG9uMyAtIDw8J1BZMicKICAgICAgICAgIGZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aAoKICAgICAgICAgIHBhdGggPSBQYXRoKCdwcm90b24tc3JjL3dpbmUvc2VydmVyL3JlcXVlc3QuYycpCiAgICAgICAgICB0ZXh0ID0gcGF0aC5yZWFkX3RleHQoZW5jb2Rpbmc9J3V0Zi04JykKCiAgICAgICAgICBvbGQgPSAiXG4iLmpvaW4oWwogICAgICAgICAgICAgICIjaWZkZWYgX19BTkRST0lEX18gIC8qIHRoZXJlJ3Mgbm8gL3RtcCBkaXIgb24gQW5kcm9pZCAqLyIsCiAgICAgICAgICAgICAgIiAgICBpZiAoYXNwcmludGYoICZiYXNlX2RpciwgXCIlcy8ud2luZXNlcnZlclwiLCBjb25maWdfZGlyICkgPT0gLTEpIiwKICAgICAgICAgICAgICAiICAgICAgICBmYXRhbF9lcnJvciggXCJvdXQgb2YgbWVtb3J5XFxuXCIgKTsiLAogICAgICAgICAgICAgICIjZWxzZSIsCiAgICAgICAgICAgICAgIiAgICBpZiAoYXNwcmludGYoICZiYXNlX2RpciwgXCIvdG1wLy53aW5lLSV1XCIsIGdldHVpZCgpICkgPT0gLTEpIiwKICAgICAgICAgICAgICAiICAgICAgICBmYXRhbF9lcnJvciggXCJvdXQgb2YgbWVtb3J5XFxuXCIgKTsiLAogICAgICAgICAgICAgICIjZW5kaWYiLAogICAgICAgICAgXSkKICAgICAgICAgIG5ldyA9ICJcbiIuam9pbihbCiAgICAgICAgICAgICAgIi8qIFdpbmxhdG9yIHJ1bnMgdGhpcyBnbGliYyBidWlsZCBpbnNpZGUgdGhlIEFuZHJvaWQgYXBwIHNhbmRib3guIiwKICAgICAgICAgICAgICAiICAgICBVc2UgV2luZSdzIG93biBBbmRyb2lkLXNhZmUgbG9jYXRpb24gdW5kZXIgV0lORVBSRUZJWCBpbnN0ZWFkIG9mIGhvc3QgL3RtcC4gKi8iLAogICAgICAgICAgICAgICIgICAgaWYgKGFzcHJpbnRmKCAmYmFzZV9kaXIsIFwiJXMvLndpbmVzZXJ2ZXJcIiwgY29uZmlnX2RpciApID09IC0xKSIsCiAgICAgICAgICAgICAgIiAgICAgICAgZmF0YWxfZXJyb3IoIFwib3V0IG9mIG1lbW9yeVxcblwiICk7IiwKICAgICAgICAgIF0pCgogICAgICAgICAgY291bnQgPSB0ZXh0LmNvdW50KG9sZCkKICAgICAgICAgIGlmIGNvdW50ICE9IDE6CiAgICAgICAgICAgICAgY29udGV4dCA9ICJcbiIuam9pbigKICAgICAgICAgICAgICAgICAgbGluZSBmb3IgbGluZSBpbiB0ZXh0LnNwbGl0bGluZXMoKQogICAgICAgICAgICAgICAgICBpZiAnLndpbmVzZXJ2ZXInIGluIGxpbmUgb3IgJy90bXAvLndpbmUtJyBpbiBsaW5lIG9yICdfX0FORFJPSURfXycgaW4gbGluZQogICAgICAgICAgICAgICkKICAgICAgICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KGYnZXhhY3QgcmVxdWVzdC5jIGFuY2hvciBjb3VudD17Y291bnR9XG57Y29udGV4dH0nKQoKICAgICAgICAgIHRleHQgPSB0ZXh0LnJlcGxhY2Uob2xkLCBuZXcsIDEpCiAgICAgICAgICBpZiAnL3RtcC8ud2luZS0ldScgaW4gdGV4dDoKICAgICAgICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCdsZWdhY3kgL3RtcCB3aW5lc2VydmVyIGZvcm1hdCByZW1haW5zIGFmdGVyIHBhdGNoJykKICAgICAgICAgIGlmIHRleHQuY291bnQoJ2FzcHJpbnRmKCAmYmFzZV9kaXIsIFwiJXMvLndpbmVzZXJ2ZXJcIiwgY29uZmlnX2RpciApJykgIT0gMToKICAgICAgICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCdleHBlY3RlZCBleGFjdGx5IG9uZSBXSU5FUFJFRklYLy53aW5lc2VydmVyIHBhdGggYWZ0ZXIgcGF0Y2gnKQogICAgICAgICAgcGF0aC53cml0ZV90ZXh0KHRleHQsIGVuY29kaW5nPSd1dGYtOCcpCgogICAgICAgICAgZXhjZXJwdCA9IFtdCiAgICAgICAgICBsaW5lcyA9IHRleHQuc3BsaXRsaW5lcygpCiAgICAgICAgICBmb3IgaW5kZXgsIGxpbmUgaW4gZW51bWVyYXRlKGxpbmVzKToKICAgICAgICAgICAgICBpZiAnV2lubGF0b3IgcnVucyB0aGlzIGdsaWJjIGJ1aWxkJyBpbiBsaW5lOgogICAgICAgICAgICAgICAgICBleGNlcnB0ID0gbGluZXNbaW5kZXg6aW5kZXggKyA1XQogICAgICAgICAgICAgICAgICBicmVhawogICAgICAgICAgcmVwb3J0ID0gKAogICAgICAgICAgICAgICdzb3VyY2U9cHJvdG9uLXNyYy93aW5lL3NlcnZlci9yZXF1ZXN0LmNcbicKICAgICAgICAgICAgICAnd2luZV9zdWJtb2R1bGVfZXhwZWN0ZWQ9ODFkNzhlNGYzZWE4Y2U4NjhkNzc1MDIxZmRjOWY5MDEyMmRjMWE2YlxuJwogICAgICAgICAgICAgICdvbGRfbm9uX2FuZHJvaWQ9L3RtcC8ud2luZS0ldVxuJwogICAgICAgICAgICAgICduZXc9JXMvLndpbmVzZXJ2ZXIgdW5kZXIgV0lORVBSRUZJWCBjb25maWdfZGlyXG4nCiAgICAgICAgICAgICAgJ2V4Y2VycHQ6XG4nICsgJ1xuJy5qb2luKGV4Y2VycHQpICsgJ1xuJwogICAgICAgICAgKQogICAgICAgICAgUGF0aCgncHJvdG9uLXdpbmVzZXJ2ZXItdG1wLXBhdGNoLnR4dCcpLndyaXRlX3RleHQocmVwb3J0LCBlbmNvZGluZz0ndXRmLTgnKQogICAgICAgICAgcHJpbnQocmVwb3J0KQogICAgICAgICAgUFkyCgogICAgICAgICAgdGVzdCAiJChnaXQgLUMgcHJvdG9uLXNyYy93aW5lIHJldi1wYXJzZSBIRUFEKSIgPSBcCiAgICAgICAgICAgICI4MWQ3OGU0ZjNlYThjZTg2OGQ3NzUwMjFmZGM5ZjkwMTIyZGMxYTZiIgogICAgICAgICAgZ3JlcCAtbiAtRiAnV2lubGF0b3IgcnVucyB0aGlzIGdsaWJjIGJ1aWxkIGluc2lkZSB0aGUgQW5kcm9pZCBhcHAgc2FuZGJveC4nIFwKICAgICAgICAgICAgcHJvdG9uLXNyYy93aW5lL3NlcnZlci9yZXF1ZXN0LmMKICAgICAgICAgIGdyZXAgLW4gLUYgJ2FzcHJpbnRmKCAmYmFzZV9kaXIsICIlcy8ud2luZXNlcnZlciIsIGNvbmZpZ19kaXIgKScgXAogICAgICAgICAgICBwcm90b24tc3JjL3dpbmUvc2VydmVyL3JlcXVlc3QuYwogICAgICAgICAgaWYgZ3JlcCAtbiAtRiAnL3RtcC8ud2luZS0ldScgcHJvdG9uLXNyYy93aW5lL3NlcnZlci9yZXF1ZXN0LmM7IHRoZW4KICAgICAgICAgICAgZWNobyAnbGVnYWN5IC90bXAgcGF0aCBzdGlsbCBwcmVzZW50IGluIHNvdXJjZScgPiYyCiAgICAgICAgICAgIGV4aXQgMQogICAgICAgICAgZmkKCg==').decode('utf-8')
+          text = text[:start] + new_step + text[end:]
+
+          old_verify = base64.b64decode('ICAgICAgICAgIHN0cmluZ3MgIiRTT1VSQ0UvYmluL3dpbmVzZXJ2ZXIiIHwgZ3JlcCAtRiAnL2RhdGEvdXNlci8wL2NvbS53aW5sYXRvci50cmNvbXBhdC9yL3RtcC8ud2luZScgXAogICAgICAgICAgICB8IHRlZSBwcm90b24td2luZXNlcnZlci1zdHJpbmctY2hlY2sudHh0Cg==').decode('utf-8')
+          new_verify = base64.b64decode('ICAgICAgICAgIHN0cmluZ3MgIiRTT1VSQ0UvYmluL3dpbmVzZXJ2ZXIiID4gcHJvdG9uLXdpbmVzZXJ2ZXItc3RyaW5ncy50eHQKICAgICAgICAgIGdyZXAgLUYgJy53aW5lc2VydmVyJyBwcm90b24td2luZXNlcnZlci1zdHJpbmdzLnR4dCBcCiAgICAgICAgICAgIHwgdGVlIHByb3Rvbi13aW5lc2VydmVyLXN0cmluZy1jaGVjay50eHQKICAgICAgICAgIGlmIGdyZXAgLUYgJy90bXAvLndpbmUtJXUnIHByb3Rvbi13aW5lc2VydmVyLXN0cmluZ3MudHh0OyB0aGVuCiAgICAgICAgICAgIGVjaG8gJ2NvbXBpbGVkIHdpbmVzZXJ2ZXIgc3RpbGwgY29udGFpbnMgbGVnYWN5IC90bXAgZm9ybWF0JyA+JjIKICAgICAgICAgICAgZXhpdCAxCiAgICAgICAgICBmaQo=').decode('utf-8')
+          if text.count(old_verify) != 1:
+              raise SystemExit('compiled-wineserver verification anchor not found exactly once')
+          text = text.replace(old_verify, new_verify, 1)
+
+          diag_anchor = '            proton-wineserver-string-check.txt\n'
+          if text.count(diag_anchor) != 1:
+              raise SystemExit('diagnostics anchor count is not one')
+          text = text.replace(diag_anchor, diag_anchor + '            proton-wineserver-strings.txt\n', 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          grep -F 'Patch exact Proton 11 wineserver temp-root branch' \
+            .github/workflows/tr-winlator-v18g-proton11-android-tmp.yml
+          if grep -F 'server_root_prefix' \
+            .github/workflows/tr-winlator-v18g-proton11-android-tmp.yml; then
+            echo 'obsolete guessed patch remains' >&2
+            exit 1
+          fi
+
+      - name: Commit corrected build workflow
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/workflows/tr-winlator-v18g-proton11-android-tmp.yml
+          git commit -m 'patch exact Proton 11 request.c wineserver path'
+          git push origin HEAD:tr-wine-compat-proton11-android-tmp-v18g

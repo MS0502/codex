@@ -1,0 +1,159 @@
+name: Fix v18g exact wineserver source patch v2
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-android-tmp-v18g]
+    paths:
+      - '.github/workflows/tr-v18g-exact-request-fix-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix-workflow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tr-wine-compat-proton11-android-tmp-v18g
+
+      - name: Replace guessed patch with exact request.c patch
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/tr-winlator-v18g-proton11-android-tmp.yml')
+          text = path.read_text(encoding='utf-8')
+
+          start_marker = '      - name: Patch wineserver temp root for Android sandbox\n'
+          end_marker = '      - name: Configure official Proton SDK\n'
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit('patch-step markers not found')
+
+          new_step = r"""      - name: Patch exact Proton 11 wineserver temp-root branch
+        run: |
+          set -euo pipefail
+          python3 - <<'PY2'
+          from pathlib import Path
+
+          path = Path('proton-src/wine/server/request.c')
+          text = path.read_text(encoding='utf-8')
+
+          old = '''#ifdef __ANDROID__  /* there's no /tmp dir on Android */
+    if (asprintf( &base_dir, "%s/.wineserver", config_dir ) == -1)
+        fatal_error( "out of memory\\n" );
+#else
+    if (asprintf( &base_dir, "/tmp/.wine-%u", getuid() ) == -1)
+        fatal_error( "out of memory\\n" );
+#endif'''
+
+          new = '''/* Winlator runs this glibc build inside the Android app sandbox.
+     Use Wine's own Android-safe location under WINEPREFIX instead of host /tmp. */
+    if (asprintf( &base_dir, "%s/.wineserver", config_dir ) == -1)
+        fatal_error( "out of memory\\n" );'''
+
+          count = text.count(old)
+          if count != 1:
+              context = '\\n'.join(
+                  line for line in text.splitlines()
+                  if '.wineserver' in line or '/tmp/.wine-' in line or '__ANDROID__' in line
+              )
+              raise SystemExit(f'exact request.c anchor count={count}\\n{context}')
+
+          text = text.replace(old, new, 1)
+          if '/tmp/.wine-%u' in text:
+              raise SystemExit('legacy /tmp wineserver format remains after patch')
+          if text.count('asprintf( &base_dir, "%s/.wineserver", config_dir )') != 1:
+              raise SystemExit('expected exactly one WINEPREFIX/.wineserver path after patch')
+          path.write_text(text, encoding='utf-8')
+
+          excerpt = []
+          lines = text.splitlines()
+          for index, line in enumerate(lines):
+              if 'Winlator runs this glibc build' in line:
+                  excerpt = lines[index:index + 5]
+                  break
+          report = (
+              'source=proton-src/wine/server/request.c\\n'
+              'wine_submodule_expected=81d78e4f3ea8ce868d775021fdc9f90122dc1a6b\\n'
+              'old_non_android=/tmp/.wine-%u\\n'
+              'new=%s/.wineserver under WINEPREFIX config_dir\\n'
+              'excerpt:\\n' + '\\n'.join(excerpt) + '\\n'
+          )
+          Path('proton-wineserver-tmp-patch.txt').write_text(report, encoding='utf-8')
+          print(report)
+          PY2
+
+          test "$(git -C proton-src/wine rev-parse HEAD)" = \
+            "81d78e4f3ea8ce868d775021fdc9f90122dc1a6b"
+          grep -n -F 'Winlator runs this glibc build inside the Android app sandbox.' \
+            proton-src/wine/server/request.c
+          grep -n -F 'asprintf( &base_dir, "%s/.wineserver", config_dir )' \
+            proton-src/wine/server/request.c
+          if grep -n -F '/tmp/.wine-%u' proton-src/wine/server/request.c; then
+            echo 'legacy /tmp path still present in source' >&2
+            exit 1
+          fi
+
+"""
+          text = text[:start] + new_step + text[end:]
+
+          old_verify = '''          strings "$SOURCE/bin/wineserver" | grep -F '/data/user/0/com.winlator.trcompat/r/tmp/.wine' \\
+            | tee proton-wineserver-string-check.txt
+'''
+          new_verify = '''          strings "$SOURCE/bin/wineserver" > proton-wineserver-strings.txt
+          grep -F '.wineserver' proton-wineserver-strings.txt \\
+            | tee proton-wineserver-string-check.txt
+          if grep -F '/tmp/.wine-%u' proton-wineserver-strings.txt; then
+            echo 'compiled wineserver still contains legacy /tmp format' >&2
+            exit 1
+          fi
+'''
+          if text.count(old_verify) != 1:
+              raise SystemExit('compiled-wineserver verification anchor not found exactly once')
+          text = text.replace(old_verify, new_verify, 1)
+
+          diag_anchor = '            proton-wineserver-string-check.txt\n'
+          if diag_anchor not in text:
+              raise SystemExit('diagnostics anchor missing')
+          text = text.replace(
+              diag_anchor,
+              diag_anchor + '            proton-wineserver-strings.txt\n',
+              1,
+          )
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('.github/workflows/tr-winlator-v18g-proton11-android-tmp.yml').read_text(encoding='utf-8')
+          checks = [
+              'Patch exact Proton 11 wineserver temp-root branch',
+              "path = Path('proton-src/wine/server/request.c')",
+              'wine_submodule_expected=81d78e4f3ea8ce868d775021fdc9f90122dc1a6b',
+              "grep -F '.wineserver' proton-wineserver-strings.txt",
+              "grep -F '/tmp/.wine-%u' proton-wineserver-strings.txt",
+          ]
+          for item in checks:
+              if item not in text:
+                  raise SystemExit(f'missing generated workflow check: {item}')
+          if 'server_root_prefix' in text:
+              raise SystemExit('obsolete guessed server_root_prefix patch remains')
+          print('v18g workflow exact-source fix verified')
+          PY
+
+      - name: Commit corrected build workflow
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/workflows/tr-winlator-v18g-proton11-android-tmp.yml
+          git commit -m 'patch exact Proton 11 request.c wineserver path'
+          git push origin HEAD:tr-wine-compat-proton11-android-tmp-v18g
+
+# trigger: exact-source-v2

@@ -1,0 +1,47 @@
+name: TR v18g status probe
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-android-tmp-v18g]
+    paths:
+      - '.github/workflows/tr-v18g-status-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tr-wine-compat-proton11-android-tmp-v18g
+
+      - name: Capture v18g build and fixer runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sleep 20
+          mkdir -p tr_winlator_apk
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/tr-winlator-v18g-proton11-android-tmp.yml/runs?branch=tr-wine-compat-proton11-android-tmp-v18g&per_page=10" \
+            --jq '[.workflow_runs[] | {id,run_number,status,conclusion,head_sha,created_at,updated_at,html_url}]' \
+            > tr_winlator_apk/V18G_LATEST_RUN.json
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/tr-v18g-exact-request-fix-v4.yml/runs?branch=tr-wine-compat-proton11-android-tmp-v18g&per_page=10" \
+            --jq '[.workflow_runs[] | {id,run_number,status,conclusion,head_sha,created_at,updated_at,html_url}]' \
+            > tr_winlator_apk/V18G_FIX_V4_RUNS.json
+          cat tr_winlator_apk/V18G_LATEST_RUN.json
+          cat tr_winlator_apk/V18G_FIX_V4_RUNS.json
+
+      - name: Commit status snapshot
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tr_winlator_apk/V18G_LATEST_RUN.json tr_winlator_apk/V18G_FIX_V4_RUNS.json
+          git commit -m 'record v18g fixer and build runs' || exit 0
+          git push origin HEAD:tr-wine-compat-proton11-android-tmp-v18g
