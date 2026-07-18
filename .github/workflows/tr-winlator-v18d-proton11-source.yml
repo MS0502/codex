@@ -1,0 +1,401 @@
+name: TR Winlator v18d Proton 11 source APK
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-source-v18d]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tr-winlator-v18d-proton11-source-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-proton-wine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free runner disk
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc || true
+          docker system prune -af || true
+          df -h
+
+      - name: Install source build tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            git git-lfs ca-certificates curl jq zstd xz-utils file binutils ccache
+          docker version
+
+      - name: Restore Proton ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: proton11-wine-source-v18d-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Fetch official Proton 11 source
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch proton_11.0 \
+            --recurse-submodules --shallow-submodules \
+            https://github.com/ValveSoftware/Proton.git proton-src
+          git -C proton-src rev-parse HEAD | tee proton-source-head.txt
+          git -C proton-src submodule status --recursive | tee proton-submodules.txt
+          test -f proton-src/configure.sh
+          test -d proton-src/wine
+
+      - name: Configure official Proton SDK build
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          set -euo pipefail
+          mkdir -p proton-build "$CCACHE_DIR"
+          cd proton-build
+          ../proton-src/configure.sh \
+            --container-engine=docker \
+            --enable-cache \
+            --build-name=tr_v18d_proton11_source 2>&1 | tee ../proton-configure.log
+          make help | tee ../proton-make-help.txt
+
+      - name: Build Proton 11 Wine target
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          set -euo pipefail
+          cd proton-build
+          make -j"$(nproc)" wine 2>&1 | tee ../proton-wine-build.log
+          cd ..
+          test -x proton-build/dist/files/bin/wine
+          test -x proton-build/dist/files/bin/wineserver
+          df -h
+
+      - name: Normalize and prove source-built glibc runtime
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json
+          import os
+          import shutil
+          from pathlib import Path
+
+          source = Path('proton-build/dist/files')
+          destination = Path('proton-wine-tree')
+          if destination.exists():
+              shutil.rmtree(destination)
+          shutil.copytree(source, destination, symlinks=True)
+
+          lib_wine = destination / 'lib/wine'
+          lib64_wine = destination / 'lib64/wine'
+          if not lib_wine.is_dir() and lib64_wine.is_dir():
+              (destination / 'lib').mkdir(exist_ok=True)
+              lib_wine.symlink_to(Path('../lib64/wine'))
+
+          required = (
+              'bin/wine',
+              'bin/wineserver',
+              'lib/wine/x86_64-unix/ntdll.so',
+              'lib/wine/x86_64-windows/wow64.dll',
+              'lib/wine/x86_64-unix/nsiproxy.so',
+              'lib/wine/x86_64-windows/ntoskrnl.exe',
+          )
+          missing = [item for item in required if not (destination / item).is_file()]
+          if missing:
+              raise SystemExit(f'source-built Proton runtime missing: {missing}')
+
+          manifest = {
+              'proton_branch': 'proton_11.0',
+              'tree_files': sum(1 for p in destination.rglob('*') if p.is_file()),
+              'tree_symlinks': sum(1 for p in destination.rglob('*') if p.is_symlink()),
+              'wine_link': os.readlink(destination / 'bin/wine')
+                  if (destination / 'bin/wine').is_symlink() else '',
+              'winedevice_candidates': [
+                  str(p.relative_to(destination))
+                  for p in destination.rglob('*winedevice*') if p.is_file()
+              ],
+          }
+          Path('proton-source-runtime-manifest.json').write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          PY
+
+          WINE_REAL="$(readlink -f proton-wine-tree/bin/wine)"
+          file "$WINE_REAL" | tee proton-source-wine-file.txt
+          readelf -d "$WINE_REAL" | tee proton-source-wine-dynamic.txt
+          readelf -Ws "$WINE_REAL" | tee proton-source-wine-symbols.txt
+          if grep -w '__libc_init' proton-source-wine-symbols.txt; then
+            echo 'Bionic __libc_init found in source-built Wine; aborting.' >&2
+            exit 1
+          fi
+          if ! grep -F 'Shared library: [libc.so.6]' proton-source-wine-dynamic.txt; then
+            echo 'glibc libc.so.6 dependency missing.' >&2
+            exit 1
+          fi
+          LD_LIBRARY_PATH="$PWD/proton-wine-tree/lib:$PWD/proton-wine-tree/lib64:$PWD/proton-wine-tree/lib/wine/x86_64-unix" \
+            proton-wine-tree/bin/wine --version | tee proton-source-wine-version.txt
+
+          tar --zstd -cf proton11-source-wine-tree.tar.zst -C proton-wine-tree .
+          sha256sum proton11-source-wine-tree.tar.zst | tee proton-source-runtime-sha256.txt
+          ls -lh proton11-source-wine-tree.tar.zst
+
+      - name: Upload source-built Proton Wine runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: PROTON11_SOURCE_WINE_RUNTIME_V18D
+          path: |
+            proton11-source-wine-tree.tar.zst
+            proton-source-head.txt
+            proton-submodules.txt
+            proton-source-runtime-manifest.json
+            proton-source-wine-file.txt
+            proton-source-wine-dynamic.txt
+            proton-source-wine-version.txt
+            proton-source-runtime-sha256.txt
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload Proton source build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PROTON11_SOURCE_WINE_BUILD_LOG_V18D
+          path: |
+            proton-configure.log
+            proton-make-help.txt
+            proton-wine-build.log
+            proton-source-head.txt
+            proton-submodules.txt
+            proton-source-runtime-manifest.json
+            proton-source-wine-file.txt
+            proton-source-wine-dynamic.txt
+            proton-source-wine-symbols.txt
+            proton-source-wine-version.txt
+            proton-source-runtime-sha256.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+  package-winlator-apk:
+    needs: build-proton-wine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            python3 git git-lfs ca-certificates curl jq unzip xz-utils zstd \
+            patchelf file binutils
+
+      - name: Download source-built Proton Wine runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: PROTON11_SOURCE_WINE_RUNTIME_V18D
+          path: proton-runtime-artifact
+
+      - name: Extract and validate Proton Wine runtime
+        run: |
+          set -euo pipefail
+          test -s proton-runtime-artifact/proton11-source-wine-tree.tar.zst
+          sha256sum proton-runtime-artifact/proton11-source-wine-tree.tar.zst
+          mkdir -p proton-wine-tree
+          tar --zstd -xf proton-runtime-artifact/proton11-source-wine-tree.tar.zst \
+            -C proton-wine-tree
+          test -x proton-wine-tree/bin/wine
+          test -x proton-wine-tree/bin/wineserver
+          test -s proton-wine-tree/lib/wine/x86_64-unix/ntdll.so
+          test -s proton-wine-tree/lib/wine/x86_64-windows/wow64.dll
+          test -s proton-wine-tree/lib/wine/x86_64-windows/ntoskrnl.exe
+
+          mkdir -p proton-components
+          cp -L proton-wine-tree/lib/wine/x86_64-unix/ntdll.so proton-components/ntdll.so
+          cp -L proton-wine-tree/lib/wine/x86_64-windows/wow64.dll proton-components/wow64.dll
+          cp -L proton-wine-tree/bin/wineserver proton-components/wineserver
+          cp -L proton-wine-tree/lib/wine/x86_64-unix/nsiproxy.so proton-components/nsiproxy.so
+          sha256sum proton-components/* | tee proton-components-sha256.txt
+
+      - name: Set up Java 17 for sdkmanager
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK components
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platforms;android-34' 'build-tools;34.0.0' \
+            'cmake;3.22.1' 'ndk;24.0.8215888'
+
+      - name: Set up Java 11 for Android Gradle Plugin
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Fetch exact Winlator 11.1 source
+        run: |
+          set -euo pipefail
+          git init winlator-app
+          git -C winlator-app remote add origin https://github.com/brunodev85/winlator-app.git
+          git -C winlator-app fetch --depth 1 origin c2f4ad4534f4637b543a9a3b085e28f50cf6d01c
+          git -C winlator-app checkout --detach FETCH_HEAD
+          test "$(git -C winlator-app rev-parse HEAD)" = c2f4ad4534f4637b543a9a3b085e28f50cf6d01c
+          git -C winlator-app lfs pull
+          test -s winlator-app/app/src/main/assets/rootfs.tzst
+          sha256sum winlator-app/app/src/main/assets/rootfs.tzst | tee rootfs-source-sha256.txt
+
+      - name: Apply v18d source-built Proton runtime
+        run: |
+          set -euo pipefail
+          python3 tr_winlator_apk/apply_v18b_patch.py \
+            winlator-app proton-wine-tree proton-components 2>&1 | tee v18d-apply.log
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          replacements = {
+              Path('winlator-app/app/build.gradle'): {
+                  '11.1-trcompat18b-proton11-valve-glibc':
+                      '11.1-trcompat18d-proton11-source-glibc',
+              },
+              Path('winlator-app/app/src/main/java/com/winlator/core/TrCompatDiagnostics.java'): {
+                  'TR_DIAG_v18B_PROTON11_GLIBC.zip': 'TR_DIAG_v18D_PROTON11_SOURCE.zip',
+                  '18b-proton11-valve-glibc': '18d-proton11-source-glibc',
+                  'v18b Valve Proton 11 glibc': 'v18d Proton 11 source glibc',
+              },
+              Path('winlator-app/app/src/main/java/com/winlator/core/TrCompatWinePatcher.java'): {
+                  'v18b-proton11-valve-glibc-1': 'v18d-proton11-source-glibc-1',
+                  '.trcompat-v18b.tmp': '.trcompat-v18d.tmp',
+              },
+              Path('winlator-app/app/src/main/java/com/winlator/core/TrCompatRootfsPatcher.java'): {
+                  'v18b-proton11-valve-glibc-1': 'v18d-proton11-source-glibc-1',
+                  '.trcompat-v18b.tmp': '.trcompat-v18d.tmp',
+              },
+          }
+          for path, mapping in replacements.items():
+              text = path.read_text(encoding='utf-8')
+              for old, new in mapping.items():
+                  if old not in text:
+                      raise SystemExit(f'missing v18d replacement anchor in {path}: {old}')
+                  text = text.replace(old, new)
+              path.write_text(text, encoding='utf-8')
+          PY
+
+          grep -F 'versionName "11.1-trcompat18d-proton11-source-glibc"' winlator-app/app/build.gradle
+          grep -F 'MAIN_WINE_VERSION = "11.0"' winlator-app/app/src/main/java/com/winlator/core/WineInfo.java
+          grep -F 'v18d-proton11-source-glibc-1' winlator-app/app/src/main/java/com/winlator/core/TrCompatWinePatcher.java
+          grep -F 'v18d-proton11-source-glibc-1' winlator-app/app/src/main/java/com/winlator/core/TrCompatRootfsPatcher.java
+
+          tar --use-compress-program=unzstd -tf winlator-app/app/src/main/assets/rootfs.tzst \
+            | sed 's#^\./##' > rootfs-v18d-file-list.txt
+          grep -Fx 'opt/wine/bin/wine' rootfs-v18d-file-list.txt
+          grep -Fx 'opt/wine/bin/wineserver' rootfs-v18d-file-list.txt
+          grep -Fx 'opt/wine/lib/wine/x86_64-windows/ntoskrnl.exe' rootfs-v18d-file-list.txt
+          grep -Fx 'opt/wine/lib/wine/x86_64-unix/ntdll.so' rootfs-v18d-file-list.txt
+          grep -Fx 'opt/wine/lib/wine/x86_64-windows/wow64.dll' rootfs-v18d-file-list.txt
+
+      - name: Restore persistent debug signing key
+        id: debug-key-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: trcompat-debug-keystore-v1
+
+      - name: Create debug signing key
+        if: steps.debug-key-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair -keystore "$HOME/.android/debug.keystore" \
+            -storepass android -alias androiddebugkey -keypass android \
+            -dname 'CN=Android Debug,O=Android,C=US' -keyalg RSA -keysize 2048 \
+            -validity 10000 -noprompt
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Build v18d APK
+        working-directory: winlator-app
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 \
+            | tee ../apk-build-v18d-proton11-source.log
+
+      - name: Upload APK build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_V18D_SOURCE_BUILD_LOG
+          path: |
+            apk-build-v18d-proton11-source.log
+            v18d-apply.log
+            rootfs-source-sha256.txt
+            proton-components-sha256.txt
+            rootfs-v18d-file-list.txt
+            proton-runtime-artifact/proton-source-head.txt
+            proton-runtime-artifact/proton-submodules.txt
+            proton-runtime-artifact/proton-source-runtime-manifest.json
+            proton-runtime-artifact/proton-source-wine-file.txt
+            proton-runtime-artifact/proton-source-wine-dynamic.txt
+            proton-runtime-artifact/proton-source-wine-version.txt
+            proton-runtime-artifact/proton-source-runtime-sha256.txt
+            winlator-app/v18b-proton-rootfs-report.txt
+            winlator-app/v9-rootfs-patch-report.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Collect v18d APK
+        run: |
+          set -euo pipefail
+          mkdir -p out-v18d
+          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk \
+            out-v18d/Winlator_11.1_TR_Compat_v18D_PROTON11_SOURCE_GLIBC.apk
+          sha256sum out-v18d/Winlator_11.1_TR_Compat_v18D_PROTON11_SOURCE_GLIBC.apk \
+            | tee out-v18d/SHA256SUMS.txt
+          cp proton-runtime-artifact/proton-source-head.txt \
+            proton-runtime-artifact/proton-source-runtime-manifest.json \
+            proton-runtime-artifact/proton-source-wine-file.txt \
+            proton-runtime-artifact/proton-source-wine-dynamic.txt \
+            proton-runtime-artifact/proton-source-wine-version.txt \
+            proton-runtime-artifact/proton-source-runtime-sha256.txt \
+            out-v18d/
+          cat > out-v18d/README_KO.txt <<'EOF'
+          Winlator TR Compat v18d - official Proton 11 source build
+
+          ValveSoftware/Proton의 proton_11.0 브랜치를 공식 Proton SDK Docker
+          환경에서 직접 빌드한 glibc Wine 런타임을 사용한다.
+
+          Steam 계정, 익명 Steam depot, Bionic WCP, 다른 게임의 XIGNCODE 파일은
+          사용하지 않았다. __libc_init 부재와 libc.so.6 의존성, wine --version을
+          빌드 중 검증했다.
+
+          기존 com.winlator.trcompat 앱과 컨테이너를 재사용하지 말고 새로 설치한다.
+          새 TR_KR_V18D 컨테이너에서만 실행한다.
+          EOF
+
+      - name: Upload v18d APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V18D_PROTON11_SOURCE_GLIBC
+          path: out-v18d/*
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
