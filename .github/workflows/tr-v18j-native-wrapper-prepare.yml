@@ -17,7 +17,7 @@ jobs:
           ref: tr-wine-compat-proton11-native-wrapper-closure-v18j
           fetch-depth: 0
 
-      - name: Conversion notice
+      - name: Overlay v2 notice
         run: |
           set -euo pipefail
-          echo "Triggering artifact-only v18j failure-tail diagnostic."
+          echo "Triggering v18j native-wrapper overlay v2 build."
