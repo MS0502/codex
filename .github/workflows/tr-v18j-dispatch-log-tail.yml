@@ -1,0 +1,24 @@
+name: Extract v18j dispatcher failure tail
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-runtime-closure-v18i]
+    paths: [.github/workflows/tr-v18j-dispatch-log-tail.yml]
+
+permissions:
+  actions: read
+  issues: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch failed dispatcher job tail
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/${GITHUB_REPOSITORY}/actions/jobs/88190002956/logs > /tmp/v18j-dispatch.log
+          tail -n 100 /tmp/v18j-dispatch.log > /tmp/tail.txt
+          BODY=$(printf 'v18j dispatcher failure tail\n\n```text\n%s\n```\n' "$(cat /tmp/tail.txt)")
+          gh api repos/${GITHUB_REPOSITORY}/issues/18/comments -f body="$BODY"
