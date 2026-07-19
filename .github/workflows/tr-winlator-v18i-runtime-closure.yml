@@ -228,7 +228,7 @@ jobs:
             exit 1
           fi
 
-          WINEX11="$(find "$SOURCE" -path '*x86_64-unix/winex11.drv.so' -print -quit)"
+          WINEX11="$(find "$SOURCE" -path '*x86_64-unix/winex11.so' -print -quit)"
           test -n "$WINEX11"
           if nm -D "$WINEX11" | grep -E 'XShape(QueryExtension|Combine|GetRectangles)'; then
             echo 'XShape dynamic references remain in winex11.drv.' >&2
