@@ -1,0 +1,39 @@
+name: Repair v18i winex11 validation path
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-runtime-closure-v18i]
+    paths: [.github/workflows/tr-v18i-workflow-path-fix.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tr-wine-compat-proton11-runtime-closure-v18i
+          fetch-depth: 0
+      - name: Correct built winex11 module path
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/tr-winlator-v18i-runtime-closure.yml')
+          text = path.read_text(encoding='utf-8')
+          old = "WINEX11=\"$(find \"$SOURCE\" -path '*x86_64-unix/winex11.drv.so' -print -quit)\""
+          new = "WINEX11=\"$(find \"$SOURCE\" -path '*x86_64-unix/winex11.so' -print -quit)\""
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one obsolete winex11 path, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          git diff --check
+          git diff -- .github/workflows/tr-winlator-v18i-runtime-closure.yml
+      - name: Commit repaired validation path
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/workflows/tr-winlator-v18i-runtime-closure.yml
+          git commit -m "Fix v18i winex11 validation path"
+          git push origin HEAD:tr-wine-compat-proton11-runtime-closure-v18i
