@@ -1,0 +1,74 @@
+name: Prepare and dispatch TR v18j from PR
+
+on:
+  pull_request:
+    branches: [tr-wine-compat-proton11-runtime-closure-v18i]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  prepare-and-dispatch:
+    if: github.event.pull_request.head.ref == 'tr-wine-compat-proton11-native-wrapper-closure-v18j'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tr-wine-compat-proton11-native-wrapper-closure-v18j
+          fetch-depth: 0
+
+      - name: Prepare v18j branch
+        run: |
+          set -euo pipefail
+          git pull --ff-only origin tr-wine-compat-proton11-native-wrapper-closure-v18j
+          git mv \
+            .github/workflows/tr-winlator-v18i-runtime-closure.yml \
+            .github/workflows/tr-winlator-v18j-native-wrapper-closure.yml
+          git mv \
+            tr_winlator_apk/apply_v18i_patch.py \
+            tr_winlator_apk/apply_v18j_patch.py
+          git mv \
+            tr_winlator_apk/v18i_plan.md \
+            tr_winlator_apk/v18j_plan.md
+          python3 tr_winlator_apk/prepare_v18j_branch.py
+          python3 -m py_compile tr_winlator_apk/apply_v18j_patch.py
+          git diff --check
+          grep -F 'libudev.so.0' tr_winlator_apk/apply_v18j_patch.py
+          grep -F 'libXinerama.so' tr_winlator_apk/apply_v18j_patch.py
+          grep -F 'libdbus-1.so.3' tr_winlator_apk/apply_v18j_patch.py
+          grep -F 'tr-wine-compat-proton11-native-wrapper-closure-v18j' \
+            .github/workflows/tr-winlator-v18j-native-wrapper-closure.yml
+          rm -f .github/workflows/tr-v18j-native-wrapper-prepare.yml
+          rm -f tr_winlator_apk/prepare_v18j_branch.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'Add v18j Box64 native wrapper runtime closure'
+          git push origin HEAD:tr-wine-compat-proton11-native-wrapper-closure-v18j
+
+      - name: Dispatch v18j build
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'tr-winlator-v18j-native-wrapper-closure.yml',
+              ref: context.payload.pull_request.head.ref,
+            });
+
+      - name: Record dispatched run on PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sleep 30
+          RUNS=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/tr-winlator-v18j-native-wrapper-closure.yml/runs?branch=tr-wine-compat-proton11-native-wrapper-closure-v18j&per_page=5" \
+            --jq '[.workflow_runs[] | {id,run_number,event,status,conclusion,head_sha,created_at,updated_at,html_url}]')
+          BODY=$(printf 'v18j dispatched workflow status\n\n```json\n%s\n```\n' "$RUNS")
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.pull_request.number }}/comments" -f body="$BODY"
