@@ -1,4 +1,4 @@
-name: Dispatch TR v18j overlay from PR
+name: Dispatch TR v18j diagnostic from PR
 
 on:
   pull_request:
@@ -16,25 +16,25 @@ jobs:
     if: github.event.pull_request.head.ref == 'tr-wine-compat-proton11-native-wrapper-closure-v18j'
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch v18j overlay build
+      - name: Dispatch v18j failure-tail extraction
         uses: actions/github-script@v7
         with:
           script: |
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              workflow_id: 'tr-winlator-v18j-apk-overlay.yml',
+              workflow_id: 'tr-v18j-dispatch-log-tail.yml',
               ref: 'tr-wine-compat-proton11-runtime-closure-v18i',
             });
 
-      - name: Record dispatched overlay run on PR
+      - name: Record diagnostic dispatch
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          sleep 30
+          sleep 20
           RUNS=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/tr-winlator-v18j-apk-overlay.yml/runs?branch=tr-wine-compat-proton11-runtime-closure-v18i&per_page=5" \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/tr-v18j-dispatch-log-tail.yml/runs?branch=tr-wine-compat-proton11-runtime-closure-v18i&per_page=5" \
             --jq '[.workflow_runs[] | {id,run_number,event,status,conclusion,head_sha,created_at,updated_at,html_url}]')
-          BODY=$(printf 'v18j overlay dispatched workflow status\n\n```json\n%s\n```\n' "$RUNS")
+          BODY=$(printf 'v18j diagnostic dispatched workflow status\n\n```json\n%s\n```\n' "$RUNS")
           gh api "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.pull_request.number }}/comments" -f body="$BODY"
