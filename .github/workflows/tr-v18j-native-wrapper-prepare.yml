@@ -20,4 +20,4 @@ jobs:
       - name: Convert v18i branch contents to v18j
         run: |
           set -euo pipefail
-          echo "PR dispatcher performs the authoritative conversion."
+          echo "PR dispatcher performs the authoritative conversion (retry 2)."
