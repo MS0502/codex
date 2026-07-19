@@ -7,7 +7,7 @@ on:
 
 permissions:
   actions: write
-  contents: write
+  contents: read
   pull-requests: write
   issues: write
 
@@ -16,32 +16,6 @@ jobs:
     if: github.event.pull_request.head.ref == 'tr-wine-compat-proton11-runtime-closure-v18i'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: tr-wine-compat-proton11-runtime-closure-v18i
-          fetch-depth: 0
-
-      - name: Correct built winex11 module path once
-        run: |
-          set -euo pipefail
-          git pull --ff-only origin tr-wine-compat-proton11-runtime-closure-v18i
-          TARGET=.github/workflows/tr-winlator-v18i-runtime-closure.yml
-          BEFORE=$(grep -F -c "x86_64-unix/winex11.drv.so" "$TARGET" || true)
-          AFTER=$(grep -F -c "x86_64-unix/winex11.so" "$TARGET" || true)
-          if [ "$BEFORE" -eq 1 ]; then
-            sed -i 's#x86_64-unix/winex11\.drv\.so#x86_64-unix/winex11.so#' "$TARGET"
-            grep -F "x86_64-unix/winex11.so" "$TARGET"
-            git diff --check
-            git config user.name github-actions[bot]
-            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git add "$TARGET"
-            git commit -m "Fix v18i winex11 validation path"
-            git push origin HEAD:tr-wine-compat-proton11-runtime-closure-v18i
-          elif [ "$AFTER" -ne 1 ]; then
-            echo "Unexpected winex11 validation path state: old=$BEFORE new=$AFTER" >&2
-            exit 1
-          fi
-
       - name: Dispatch v18i build
         uses: actions/github-script@v7
         with:
