@@ -17,7 +17,7 @@ jobs:
           ref: tr-wine-compat-proton11-native-wrapper-closure-v18j
           fetch-depth: 0
 
-      - name: Overlay v4 probe notice
+      - name: Overlay v5 probe notice
         run: |
           set -euo pipefail
-          echo "Probing the recursive ARM64 closure v4 run."
+          echo "Probing the complete ARM64 closure v5 run."
