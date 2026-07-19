@@ -23,22 +23,23 @@ jobs:
 
       - name: Correct built winex11 module path once
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('.github/workflows/tr-winlator-v18i-runtime-closure.yml')
-          text = path.read_text(encoding='utf-8')
-          old = "WINEX11=\"$(find \"$SOURCE\" -path '*x86_64-unix/winex11.drv.so' -print -quit)\""
-          new = "WINEX11=\"$(find \"$SOURCE\" -path '*x86_64-unix/winex11.so' -print -quit)\""
-          if old in text:
-              path.write_text(text.replace(old, new, 1), encoding='utf-8')
-          PY
-          if ! git diff --quiet -- .github/workflows/tr-winlator-v18i-runtime-closure.yml; then
+          set -euo pipefail
+          git pull --ff-only origin tr-wine-compat-proton11-runtime-closure-v18i
+          TARGET=.github/workflows/tr-winlator-v18i-runtime-closure.yml
+          BEFORE=$(grep -F -c "x86_64-unix/winex11.drv.so" "$TARGET" || true)
+          AFTER=$(grep -F -c "x86_64-unix/winex11.so" "$TARGET" || true)
+          if [ "$BEFORE" -eq 1 ]; then
+            sed -i 's#x86_64-unix/winex11\.drv\.so#x86_64-unix/winex11.so#' "$TARGET"
+            grep -F "x86_64-unix/winex11.so" "$TARGET"
             git diff --check
             git config user.name github-actions[bot]
             git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git add .github/workflows/tr-winlator-v18i-runtime-closure.yml
+            git add "$TARGET"
             git commit -m "Fix v18i winex11 validation path"
             git push origin HEAD:tr-wine-compat-proton11-runtime-closure-v18i
+          elif [ "$AFTER" -ne 1 ]; then
+            echo "Unexpected winex11 validation path state: old=$BEFORE new=$AFTER" >&2
+            exit 1
           fi
 
       - name: Dispatch v18i build
