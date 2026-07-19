@@ -5,7 +5,7 @@ on:
 
 permissions:
   actions: read
-  issues: write
+  contents: read
 
 jobs:
   extract:
@@ -17,9 +17,8 @@ jobs:
         run: |
           set -euo pipefail
           gh api repos/${GITHUB_REPOSITORY}/actions/jobs/88190963073/logs > /tmp/v18j-overlay.log
-          tail -n 180 /tmp/v18j-overlay.log > /tmp/tail.txt
-          BODY=$(printf 'v18j overlay failure tail\n\n```text\n%s\n```\n' "$(cat /tmp/tail.txt)")
-          gh api repos/${GITHUB_REPOSITORY}/issues/18/comments -f body="$BODY"
+          tail -n 220 /tmp/v18j-overlay.log > /tmp/tail.txt
+          test -s /tmp/tail.txt
 
       - name: Upload tail
         uses: actions/upload-artifact@v4
