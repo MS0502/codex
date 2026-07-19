@@ -355,7 +355,7 @@ jobs:
           grep -F 'ARM aarch64' packaged-native-runtime-file.txt
           test ! -e rootfs-check/etc/machine-id
           test ! -e rootfs-check/var/lib/dbus/machine-id
-          rm -rf rootfs-check proton-wine-tree proton-components native-runtime proton-src
+          sudo rm -rf rootfs-check proton-wine-tree proton-components native-runtime proton-src
           df -h
 
       - name: Restore signing key
