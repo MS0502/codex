@@ -22,33 +22,46 @@ jobs:
           fetch-depth: 0
 
       - name: Prepare v18j branch
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          git pull --ff-only origin tr-wine-compat-proton11-native-wrapper-closure-v18j
-          git mv \
-            .github/workflows/tr-winlator-v18i-runtime-closure.yml \
-            .github/workflows/tr-winlator-v18j-native-wrapper-closure.yml
-          git mv \
-            tr_winlator_apk/apply_v18i_patch.py \
-            tr_winlator_apk/apply_v18j_patch.py
-          git mv \
-            tr_winlator_apk/v18i_plan.md \
-            tr_winlator_apk/v18j_plan.md
-          python3 tr_winlator_apk/prepare_v18j_branch.py
-          python3 -m py_compile tr_winlator_apk/apply_v18j_patch.py
-          git diff --check
-          grep -F 'libudev.so.0' tr_winlator_apk/apply_v18j_patch.py
-          grep -F 'libXinerama.so' tr_winlator_apk/apply_v18j_patch.py
-          grep -F 'libdbus-1.so.3' tr_winlator_apk/apply_v18j_patch.py
-          grep -F 'tr-wine-compat-proton11-native-wrapper-closure-v18j' \
-            .github/workflows/tr-winlator-v18j-native-wrapper-closure.yml
-          rm -f .github/workflows/tr-v18j-native-wrapper-prepare.yml
-          rm -f tr_winlator_apk/prepare_v18j_branch.py
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A
-          git commit -m 'Add v18j Box64 native wrapper runtime closure'
-          git push origin HEAD:tr-wine-compat-proton11-native-wrapper-closure-v18j
+          set +e
+          (
+            set -euo pipefail
+            git pull --ff-only origin tr-wine-compat-proton11-native-wrapper-closure-v18j
+            git mv \
+              .github/workflows/tr-winlator-v18i-runtime-closure.yml \
+              .github/workflows/tr-winlator-v18j-native-wrapper-closure.yml
+            git mv \
+              tr_winlator_apk/apply_v18i_patch.py \
+              tr_winlator_apk/apply_v18j_patch.py
+            git mv \
+              tr_winlator_apk/v18i_plan.md \
+              tr_winlator_apk/v18j_plan.md
+            python3 tr_winlator_apk/prepare_v18j_branch.py
+            python3 -m py_compile tr_winlator_apk/apply_v18j_patch.py
+            git diff --check
+            grep -F 'libudev.so.0' tr_winlator_apk/apply_v18j_patch.py
+            grep -F 'libXinerama.so' tr_winlator_apk/apply_v18j_patch.py
+            grep -F 'libdbus-1.so.3' tr_winlator_apk/apply_v18j_patch.py
+            grep -F 'tr-wine-compat-proton11-native-wrapper-closure-v18j' \
+              .github/workflows/tr-winlator-v18j-native-wrapper-closure.yml
+            rm -f .github/workflows/tr-v18j-native-wrapper-prepare.yml
+            rm -f tr_winlator_apk/prepare_v18j_branch.py
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add -A
+            git commit -m 'Add v18j Box64 native wrapper runtime closure'
+            git push origin HEAD:tr-wine-compat-proton11-native-wrapper-closure-v18j
+          ) 2>&1 | tee /tmp/v18j-prepare.log
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$STATUS" -ne 0 ]; then
+            TAIL=$(tail -n 100 /tmp/v18j-prepare.log)
+            BODY=$(printf 'v18j preparation failure\n\n```text\n%s\n```\n' "$TAIL")
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.pull_request.number }}/comments" -f body="$BODY"
+            exit "$STATUS"
+          fi
 
       - name: Dispatch v18j build
         uses: actions/github-script@v7
