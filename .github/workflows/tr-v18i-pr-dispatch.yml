@@ -7,7 +7,7 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
   pull-requests: write
   issues: write
 
@@ -16,6 +16,31 @@ jobs:
     if: github.event.pull_request.head.ref == 'tr-wine-compat-proton11-runtime-closure-v18i'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tr-wine-compat-proton11-runtime-closure-v18i
+          fetch-depth: 0
+
+      - name: Correct built winex11 module path once
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/tr-winlator-v18i-runtime-closure.yml')
+          text = path.read_text(encoding='utf-8')
+          old = "WINEX11=\"$(find \"$SOURCE\" -path '*x86_64-unix/winex11.drv.so' -print -quit)\""
+          new = "WINEX11=\"$(find \"$SOURCE\" -path '*x86_64-unix/winex11.so' -print -quit)\""
+          if old in text:
+              path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          if ! git diff --quiet -- .github/workflows/tr-winlator-v18i-runtime-closure.yml; then
+            git diff --check
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add .github/workflows/tr-winlator-v18i-runtime-closure.yml
+            git commit -m "Fix v18i winex11 validation path"
+            git push origin HEAD:tr-wine-compat-proton11-runtime-closure-v18i
+          fi
+
       - name: Dispatch v18i build
         uses: actions/github-script@v7
         with:
