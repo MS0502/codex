@@ -17,7 +17,7 @@ jobs:
           ref: tr-wine-compat-proton11-native-wrapper-closure-v18j
           fetch-depth: 0
 
-      - name: Convert v18i branch contents to v18j
+      - name: Conversion notice
         run: |
           set -euo pipefail
-          echo "PR dispatcher performs the authoritative conversion (retry 2)."
+          echo "v18j is now built as a signed rootfs overlay from the proven v18i APK."
