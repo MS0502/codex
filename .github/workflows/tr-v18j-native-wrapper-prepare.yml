@@ -20,4 +20,4 @@ jobs:
       - name: Conversion notice
         run: |
           set -euo pipefail
-          echo "v18j is now built as a signed rootfs overlay from the proven v18i APK."
+          echo "Triggering v18j failure-tail diagnostic."
