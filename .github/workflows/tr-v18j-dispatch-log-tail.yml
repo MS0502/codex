@@ -1,9 +1,7 @@
 name: Extract v18j overlay failure tail
 
 on:
-  push:
-    branches: [tr-wine-compat-proton11-runtime-closure-v18i]
-    paths: [.github/workflows/tr-v18j-dispatch-log-tail.yml]
+  workflow_dispatch:
 
 permissions:
   actions: read
@@ -19,6 +17,14 @@ jobs:
         run: |
           set -euo pipefail
           gh api repos/${GITHUB_REPOSITORY}/actions/jobs/88190963073/logs > /tmp/v18j-overlay.log
-          tail -n 140 /tmp/v18j-overlay.log > /tmp/tail.txt
+          tail -n 180 /tmp/v18j-overlay.log > /tmp/tail.txt
           BODY=$(printf 'v18j overlay failure tail\n\n```text\n%s\n```\n' "$(cat /tmp/tail.txt)")
           gh api repos/${GITHUB_REPOSITORY}/issues/18/comments -f body="$BODY"
+
+      - name: Upload tail
+        uses: actions/upload-artifact@v4
+        with:
+          name: V18J_OVERLAY_FAILURE_TAIL
+          path: /tmp/tail.txt
+          if-no-files-found: error
+          retention-days: 7
