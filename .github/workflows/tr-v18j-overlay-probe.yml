@@ -1,4 +1,4 @@
-name: Probe v18j overlay v4 run
+name: Probe v18j overlay v5 run
 
 on:
   push:
@@ -13,15 +13,15 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Record latest overlay v4 runs
+      - name: Record latest overlay v5 runs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           sleep 15
           RUNS=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/tr-winlator-v18j-apk-overlay-v4.yml/runs?branch=tr-wine-compat-proton11-runtime-closure-v18i&per_page=5" \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/tr-winlator-v18j-apk-overlay-v5.yml/runs?branch=tr-wine-compat-proton11-runtime-closure-v18i&per_page=5" \
             --jq '[.workflow_runs[] | {id,run_number,event,status,conclusion,head_sha,created_at,updated_at,html_url}]')
           echo "$RUNS"
-          BODY=$(printf 'v18j overlay v4 run probe\n\n```json\n%s\n```\n' "$RUNS")
+          BODY=$(printf 'v18j overlay v5 run probe\n\n```json\n%s\n```\n' "$RUNS")
           gh api repos/${GITHUB_REPOSITORY}/issues/18/comments -f body="$BODY"
