@@ -59,6 +59,7 @@ jobs:
           sudo install -D -m 0755 box64/usr/local/bin/box64 rootfs/usr/local/bin/box64
           sudo mkdir -p rootfs/home/winlator rootfs/data/data/com.winlator.trcompat/files
           sudo cp -a prefix/.wine rootfs/home/winlator/.wine
+          sudo chown -R 0:0 rootfs/home/winlator/.wine
           sudo ln -sfn / rootfs/data/data/com.winlator.trcompat/files/rootfs
           sudo mkdir -p rootfs/etc rootfs/var/lib/dbus rootfs/tmp rootfs/dev rootfs/proc rootfs/sys
           printf '%s\n' 0123456789abcdef0123456789abcdef | sudo tee rootfs/etc/machine-id >/dev/null
