@@ -1,0 +1,38 @@
+name: Fix v18d Proton configure option
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-source-v18d]
+    paths:
+      - '.github/workflows/tr-winlator-v18d-fix-config-option.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  fix-option:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Replace invalid configure flag and trigger v18d
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: tr-wine-compat-proton11-source-v18d
+          TARGET: .github/workflows/tr-winlator-v18d-proton11-source.yml
+        run: |
+          set -euo pipefail
+          META="$(gh api "repos/$GH_REPO/contents/$TARGET?ref=$BRANCH")"
+          SHA="$(printf '%s' "$META" | jq -r '.sha')"
+          printf '%s' "$META" | jq -r '.content' | tr -d '\n' | base64 -d > workflow.yml
+          grep -F -- '--enable-cache' workflow.yml
+          sed -i 's/--enable-cache/--enable-ccache/' workflow.yml
+          grep -F -- '--enable-ccache' workflow.yml
+          CONTENT="$(base64 -w0 workflow.yml)"
+          jq -n \
+            --arg message 'fix Proton 11 configure ccache flag' \
+            --arg content "$CONTENT" \
+            --arg sha "$SHA" \
+            --arg branch "$BRANCH" \
+            '{message:$message,content:$content,sha:$sha,branch:$branch}' > payload.json
+          gh api --method PUT "repos/$GH_REPO/contents/$TARGET" --input payload.json
