@@ -104,25 +104,25 @@ jobs:
           sudo mount --rbind /sys rootfs/sys
           sudo mount --make-rslave rootfs/sys
           sudo mount --bind /tmp rootfs/tmp
-          Xvfb :99 -ac -screen 0 1280x720x24 -nolisten tcp >evidence/xvfb.log 2>&1 &
+          Xvfb :99 -ac -screen 0 1280x720x24 -listen tcp >evidence/xvfb.log 2>&1 &
           echo $! > evidence/xvfb.pid
           for _ in $(seq 1 30); do
-            xdpyinfo -display :99 >/dev/null 2>&1 && break
+            xdpyinfo -display 127.0.0.1:99.0 >/dev/null 2>&1 && break
             sleep 1
           done
-          xdpyinfo -display :99 > evidence/xdpyinfo.txt
-          xdpyinfo -display :99 | grep -q SHAPE
+          xdpyinfo -display 127.0.0.1:99.0 > evidence/xdpyinfo.txt
+          xdpyinfo -display 127.0.0.1:99.0 | grep -q SHAPE
 
-          sudo env DISPLAY=:99 XAUTHORITY=/dev/null \
+          sudo env DISPLAY=127.0.0.1:99.0 XAUTHORITY=/dev/null \
             LD_LIBRARY_PATH=/lib:/usr/lib:/usr/lib/aarch64-linux-gnu \
             /usr/sbin/chroot rootfs /usr/local/bin/xopen-display \
-            | tee evidence/xopen-display.txt
+            2>&1 | tee evidence/xopen-display.txt
           grep -F 'XOpenDisplay ok' evidence/xopen-display.txt
 
       - name: Execute Box64 Wine Explorer for 60 seconds
         run: |
           set -euo pipefail
-          sudo env HOME=/home/winlator USER=winlator DISPLAY=:99 XAUTHORITY=/dev/null \
+          sudo env HOME=/home/winlator USER=winlator DISPLAY=127.0.0.1:99.0 XAUTHORITY=/dev/null \
             WINEPREFIX=/home/winlator/.wine WINEDEBUG=warn+all,err+all \
             PATH=/opt/wine/bin:/usr/local/bin:/usr/bin:/bin \
             LD_LIBRARY_PATH=/lib:/usr/lib:/usr/lib/aarch64-linux-gnu \
@@ -145,11 +145,11 @@ jobs:
             ps -eo pid,ppid,stat,etime,comm,args \
               | grep -E 'box64|wine|wineserver|explorer' | grep -v grep \
               >> evidence/processes.txt || true
-            xwininfo -display :99 -root -tree > "evidence/xwininfo-${second}.txt" 2>&1 || true
+            xwininfo -display 127.0.0.1:99.0 -root -tree > "evidence/xwininfo-${second}.txt" 2>&1 || true
             if grep -Eqi 'TRSmoke|Wine desktop|explorer' "evidence/xwininfo-${second}.txt"; then
               windows=$((windows + 1))
             fi
-            import -display :99 -window root "evidence/screen-${second}.png" || true
+            import -display 127.0.0.1:99.0 -window root "evidence/screen-${second}.png" || true
           done
 
           printf 'alive_checks=%s\nwindow_checks=%s\n' "$alive" "$windows" | tee evidence/result.txt
