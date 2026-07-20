@@ -1,4 +1,4 @@
-name: TR v18K ARM64 Explorer PR gate
+name: TR v18K ARM64 exact Winlator shell gate
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
   actions: read
 
 jobs:
-  arm64-explorer-gate:
+  arm64-exact-shell-gate:
     if: github.event.pull_request.head.ref == 'tr-wine-compat-proton11-xshape-restore-v18k'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
@@ -48,12 +48,13 @@ jobs:
           grep -F '4003bcb0c863519720116d93540e161d640800692c0e002f7e8ac42434e5a215' apk-sha256.txt
           cp "$APK" v18j.apk
 
-      - name: Reproduce Winlator main-Wine container creation
+      - name: Reproduce exact Winlator main-Wine shell prefix
         run: |
           set -euo pipefail
           mkdir -p apk rootfs box64 prefix evidence
-          unzip -q v18j.apk assets/rootfs.tzst assets/container_pattern.tzst \
-            assets/common_dlls.json assets/box64/box64-0.4.0.tzst -d apk
+          unzip -q v18j.apk assets/rootfs.tzst assets/rootfs_patches.tzst \
+            assets/container_pattern.tzst assets/common_dlls.json \
+            assets/box64/box64-0.4.0.tzst -d apk
           tar --use-compress-program=unzstd -xf apk/assets/rootfs.tzst -C rootfs
           tar --use-compress-program=unzstd -xf apk/assets/box64/box64-0.4.0.tzst -C box64
           tar --use-compress-program=unzstd -xf apk/assets/container_pattern.tzst -C prefix
@@ -79,9 +80,10 @@ jobs:
 
           sudo install -D -m 0755 box64/usr/local/bin/box64 rootfs/usr/local/bin/box64
           sudo install -D -m 0755 xopen-display rootfs/usr/local/bin/xopen-display
-          sudo mkdir -p rootfs/home/winlator rootfs/data/data/com.winlator.trcompat/files
-          sudo cp -a prefix/.wine rootfs/home/winlator/.wine
-          sudo chown -R 0:0 rootfs/home/winlator/.wine
+          sudo mkdir -p rootfs/home/xuser rootfs/data/data/com.winlator.trcompat/files
+          sudo cp -a prefix/.wine rootfs/home/xuser/.wine
+          sudo tar --use-compress-program=unzstd -xf apk/assets/rootfs_patches.tzst -C rootfs
+          sudo chown -R 0:0 rootfs/home/xuser/.wine
           sudo ln -sfn / rootfs/data/data/com.winlator.trcompat/files/rootfs
           sudo mkdir -p rootfs/etc rootfs/var/lib/dbus rootfs/tmp rootfs/dev rootfs/proc rootfs/sys
           printf '%s\n' 0123456789abcdef0123456789abcdef | sudo tee rootfs/etc/machine-id >/dev/null
@@ -92,8 +94,14 @@ jobs:
             | tee runtime-file-types.txt
           test "$(grep -c 'ARM aarch64' runtime-file-types.txt)" -ge 2
           test "$(grep -c 'x86-64' runtime-file-types.txt)" -ge 2
-          test -f rootfs/home/winlator/.wine/drive_c/windows/system32/kernel32.dll
-          test -f rootfs/home/winlator/.wine/drive_c/windows/system32/explorer.exe
+          test -f rootfs/home/xuser/.wine/drive_c/windows/system32/kernel32.dll
+          test -f rootfs/home/xuser/.wine/drive_c/windows/system32/explorer.exe
+          test -f rootfs/home/xuser/.wine/drive_c/windows/winhandler.exe
+          test -f rootfs/home/xuser/.wine/drive_c/windows/wfm.exe
+          sha256sum \
+            rootfs/home/xuser/.wine/drive_c/windows/winhandler.exe \
+            rootfs/home/xuser/.wine/drive_c/windows/wfm.exe \
+            | tee winlator-shell-files-sha256.txt
 
       - name: Mount rootfs and prove chroot X11 access
         run: |
@@ -119,11 +127,13 @@ jobs:
             2>&1 | tee evidence/xopen-display.txt
           grep -F 'XOpenDisplay ok' evidence/xopen-display.txt
 
-      - name: Execute Box64 Wine Explorer for 60 seconds
+      - name: Execute exact Winlator shell for 60 seconds
         run: |
           set -euo pipefail
-          sudo env HOME=/home/winlator USER=winlator DISPLAY=127.0.0.1:99.0 XAUTHORITY=/dev/null \
-            WINEPREFIX=/home/winlator/.wine WINEDEBUG=warn+all,err+all \
+          sudo env HOME=/home/xuser USER=xuser DISPLAY=127.0.0.1:99.0 XAUTHORITY=/dev/null \
+            WINEPREFIX=/home/xuser/.wine WINEDEBUG=warn+all,err+all \
+            WINEESYNC=1 WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER=1 \
+            MESA_DEBUG=silent MESA_NO_ERROR=1 \
             PATH=/opt/wine/bin:/usr/local/bin:/usr/bin:/bin \
             LD_LIBRARY_PATH=/lib:/usr/lib:/usr/lib/aarch64-linux-gnu \
             BOX64_NOBANNER=0 BOX64_LOG=1 BOX64_DYNAREC=1 \
@@ -131,28 +141,33 @@ jobs:
             BOX64_LD_LIBRARY_PATH=/opt/wine/lib:/usr/lib:/lib \
             /usr/bin/timeout --signal=TERM 70s \
             /usr/sbin/chroot rootfs /usr/local/bin/box64 /opt/wine/bin/wine \
-            explorer.exe /desktop=TRSmoke,1280x720 \
+            explorer /desktop=shell,1280x720 \
+            'C:\windows\winhandler.exe' /dir 'C:\windows' 'wfm.exe' \
             >evidence/wine.log 2>&1 &
           PID=$!
           echo "$PID" > evidence/runtime.pid
 
           alive=0
           windows=0
+          shell_children=0
           for second in 10 20 30 40 50 60; do
             sleep 10
             if kill -0 "$PID" 2>/dev/null; then alive=$((alive + 1)); fi
             printf '=== %ss ===\n' "$second" >> evidence/processes.txt
             ps -eo pid,ppid,stat,etime,comm,args \
-              | grep -E 'box64|wine|wineserver|explorer' | grep -v grep \
+              | grep -E 'box64|wine|wineserver|explorer|winhandler|wfm' | grep -v grep \
               >> evidence/processes.txt || true
             xwininfo -display 127.0.0.1:99.0 -root -tree > "evidence/xwininfo-${second}.txt" 2>&1 || true
-            if grep -Eqi 'TRSmoke|Wine desktop|explorer' "evidence/xwininfo-${second}.txt"; then
+            if grep -Eqi 'shell - Wine Desktop|Wine Desktop|wfm|Winlator' "evidence/xwininfo-${second}.txt"; then
               windows=$((windows + 1))
             fi
+            count="$(grep -Ec '^        0x|^     0x' "evidence/xwininfo-${second}.txt" || true)"
+            if [ "$count" -ge 2 ]; then shell_children=$((shell_children + 1)); fi
             import -display 127.0.0.1:99.0 -window root "evidence/screen-${second}.png" || true
           done
 
-          printf 'alive_checks=%s\nwindow_checks=%s\n' "$alive" "$windows" | tee evidence/result.txt
+          printf 'alive_checks=%s\nwindow_checks=%s\nshell_child_checks=%s\n' \
+            "$alive" "$windows" "$shell_children" | tee evidence/result.txt
           grep -Ei 'winebus[^\n]*c0000135|service[^\n]*126|RpcSs[^\n]*fail|Initialization of L"winex11.drv" failed|segmentation fault|SIGSEGV' \
             evidence/wine.log > evidence/fatal-markers.txt || true
 
@@ -160,6 +175,7 @@ jobs:
           wait "$PID" || true
           test "$alive" -ge 5
           test "$windows" -ge 5
+          test "$shell_children" -ge 5
           test ! -s evidence/fatal-markers.txt
 
       - name: Cleanup mounts
@@ -172,11 +188,11 @@ jobs:
           sudo umount -R -l rootfs/sys 2>/dev/null || true
           sudo umount -R -l rootfs/dev 2>/dev/null || true
 
-      - name: Upload ARM64 runtime evidence
+      - name: Upload exact shell evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: V18J_ARM64_EXPLORER_PR_GATE_EVIDENCE
+          name: V18J_ARM64_EXACT_WINLATOR_SHELL_EVIDENCE
           path: |
             evidence/
             runner-uname.txt
@@ -184,4 +200,5 @@ jobs:
             apk-sha256.txt
             runtime-file-types.txt
             container-materialization.txt
+            winlator-shell-files-sha256.txt
           if-no-files-found: warn
