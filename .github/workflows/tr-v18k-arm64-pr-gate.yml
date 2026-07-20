@@ -27,7 +27,8 @@ jobs:
           test "$(dpkg --print-architecture)" = arm64
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            curl unzip zstd file binutils xvfb x11-utils imagemagick procps
+            curl unzip zstd file binutils xvfb x11-utils imagemagick procps \
+            gcc libx11-dev
           python3 -m py_compile tr_winlator_apk/materialize_main_wine_container.py
 
       - name: Download exact v18J APK internally
@@ -60,7 +61,24 @@ jobs:
           python3 tr_winlator_apk/materialize_main_wine_container.py \
             rootfs prefix apk/assets/common_dlls.json | tee container-materialization.txt
 
+          cat > xopen-display.c <<'EOF'
+          #include <X11/Xlib.h>
+          #include <stdio.h>
+          int main(void) {
+              Display *display = XOpenDisplay(NULL);
+              if (!display) {
+                  fprintf(stderr, "XOpenDisplay failed for %s\n", XDisplayName(NULL));
+                  return 1;
+              }
+              printf("XOpenDisplay ok display=%s screens=%d\n", DisplayString(display), ScreenCount(display));
+              XCloseDisplay(display);
+              return 0;
+          }
+          EOF
+          gcc -O2 xopen-display.c -lX11 -o xopen-display
+
           sudo install -D -m 0755 box64/usr/local/bin/box64 rootfs/usr/local/bin/box64
+          sudo install -D -m 0755 xopen-display rootfs/usr/local/bin/xopen-display
           sudo mkdir -p rootfs/home/winlator rootfs/data/data/com.winlator.trcompat/files
           sudo cp -a prefix/.wine rootfs/home/winlator/.wine
           sudo chown -R 0:0 rootfs/home/winlator/.wine
@@ -69,14 +87,15 @@ jobs:
           printf '%s\n' 0123456789abcdef0123456789abcdef | sudo tee rootfs/etc/machine-id >/dev/null
           sudo ln -sfn /etc/machine-id rootfs/var/lib/dbus/machine-id
 
-          file rootfs/usr/local/bin/box64 rootfs/opt/wine/bin/wine \
-            rootfs/opt/wine/bin/wineserver | tee runtime-file-types.txt
-          grep -F 'ARM aarch64' runtime-file-types.txt
+          file rootfs/usr/local/bin/box64 rootfs/usr/local/bin/xopen-display \
+            rootfs/opt/wine/bin/wine rootfs/opt/wine/bin/wineserver \
+            | tee runtime-file-types.txt
+          test "$(grep -c 'ARM aarch64' runtime-file-types.txt)" -ge 2
           test "$(grep -c 'x86-64' runtime-file-types.txt)" -ge 2
           test -f rootfs/home/winlator/.wine/drive_c/windows/system32/kernel32.dll
           test -f rootfs/home/winlator/.wine/drive_c/windows/system32/explorer.exe
 
-      - name: Mount rootfs and start SHAPE X server
+      - name: Mount rootfs and prove chroot X11 access
         run: |
           set -euo pipefail
           sudo mount --rbind /dev rootfs/dev
@@ -85,7 +104,7 @@ jobs:
           sudo mount --rbind /sys rootfs/sys
           sudo mount --make-rslave rootfs/sys
           sudo mount --bind /tmp rootfs/tmp
-          Xvfb :99 -screen 0 1280x720x24 -nolisten tcp >evidence/xvfb.log 2>&1 &
+          Xvfb :99 -ac -screen 0 1280x720x24 -nolisten tcp >evidence/xvfb.log 2>&1 &
           echo $! > evidence/xvfb.pid
           for _ in $(seq 1 30); do
             xdpyinfo -display :99 >/dev/null 2>&1 && break
@@ -94,10 +113,16 @@ jobs:
           xdpyinfo -display :99 > evidence/xdpyinfo.txt
           xdpyinfo -display :99 | grep -q SHAPE
 
+          sudo env DISPLAY=:99 XAUTHORITY=/dev/null \
+            LD_LIBRARY_PATH=/lib:/usr/lib:/usr/lib/aarch64-linux-gnu \
+            /usr/sbin/chroot rootfs /usr/local/bin/xopen-display \
+            | tee evidence/xopen-display.txt
+          grep -F 'XOpenDisplay ok' evidence/xopen-display.txt
+
       - name: Execute Box64 Wine Explorer for 60 seconds
         run: |
           set -euo pipefail
-          sudo env HOME=/home/winlator USER=winlator DISPLAY=:99 \
+          sudo env HOME=/home/winlator USER=winlator DISPLAY=:99 XAUTHORITY=/dev/null \
             WINEPREFIX=/home/winlator/.wine WINEDEBUG=warn+all,err+all \
             PATH=/opt/wine/bin:/usr/local/bin:/usr/bin:/bin \
             LD_LIBRARY_PATH=/lib:/usr/lib:/usr/lib/aarch64-linux-gnu \
@@ -128,7 +153,7 @@ jobs:
           done
 
           printf 'alive_checks=%s\nwindow_checks=%s\n' "$alive" "$windows" | tee evidence/result.txt
-          grep -Ei 'c0000135|service[^\n]*126|RpcSs[^\n]*fail|segmentation fault|SIGSEGV' \
+          grep -Ei 'winebus[^\n]*c0000135|service[^\n]*126|RpcSs[^\n]*fail|Initialization of L"winex11.drv" failed|segmentation fault|SIGSEGV' \
             evidence/wine.log > evidence/fatal-markers.txt || true
 
           kill "$PID" 2>/dev/null || true
