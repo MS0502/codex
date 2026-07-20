@@ -122,7 +122,7 @@ jobs:
               return id_zero_button_count ? 0 : 4;
           }
           EOF
-          x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -municode -mconsole \
+          x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -mconsole \
             taskbar_probe.c -o taskbar_probe.exe
           file taskbar_probe.exe | tee taskbar-probe-file.txt
           sha256sum taskbar_probe.exe | tee taskbar-probe-sha256.txt
