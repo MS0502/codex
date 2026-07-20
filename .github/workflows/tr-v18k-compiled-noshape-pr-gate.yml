@@ -53,36 +53,38 @@ jobs:
           import sys
 
           root = Path(sys.argv[1])
+
+          # Keep shape.c in the build because other Xserver objects may depend on
+          # its internal symbols. Remove only the extension registration so the
+          # server does not advertise or initialize the SHAPE protocol extension.
           meson = root / "Xext/meson.build"
-          text = meson.read_text(encoding="utf-8")
-          anchor = "    'shape.c',\n"
-          if text.count(anchor) != 1:
-              raise SystemExit(f"shape.c Meson anchor count={text.count(anchor)}")
-          meson.write_text(text.replace(anchor, "", 1), encoding="utf-8")
+          meson_text = meson.read_text(encoding="utf-8")
+          shape_anchor = "    'shape.c',\n"
+          if meson_text.count(shape_anchor) != 1:
+              raise SystemExit(
+                  f"shape.c Meson anchor count={meson_text.count(shape_anchor)}"
+              )
 
           init = root / "mi/miinitext.c"
-          text = init.read_text(encoding="utf-8")
+          init_text = init.read_text(encoding="utf-8")
           pattern = re.compile(
               r'^\s*\{ShapeExtensionInit,\s*"SHAPE",\s*[^}]+\},\s*\n',
               re.MULTILINE,
           )
-          text, count = pattern.subn("", text, count=1)
+          patched, count = pattern.subn("", init_text, count=1)
           if count != 1:
               raise SystemExit(f"SHAPE extension registration count={count}")
-          init.write_text(text, encoding="utf-8")
+          init.write_text(patched, encoding="utf-8")
           PY
 
-          ! grep -F "'shape.c'" "$SOURCE/Xext/meson.build"
+          test "$(grep -c -F "'shape.c'" "$SOURCE/Xext/meson.build")" -eq 1
           ! grep -F '{ShapeExtensionInit, "SHAPE"' "$SOURCE/mi/miinitext.c"
-          grep -n -C 3 'Generic Event Extension' "$SOURCE/mi/miinitext.c" \
+          grep -n -C 4 'Generic Event Extension' "$SOURCE/mi/miinitext.c" \
             | tee ../evidence-build/miinitext-after.txt
-          sed -n '1,20p' "$SOURCE/Xext/meson.build" \
+          sed -n '1,24p' "$SOURCE/Xext/meson.build" \
             | tee ../evidence-build/xext-meson-after.txt
-          git -C "$SOURCE" diff --no-index /dev/null Xext/meson.build >/dev/null 2>&1 || true
-          diff -u <(printf "    'shape.c',\n") <(grep -F "'shape.c'" "$SOURCE/Xext/meson.build" || true) \
-            > ../evidence-build/shape-source-removal.diff || true
 
-      - name: Build minimal ARM64 Xvfb without SHAPE
+      - name: Build minimal ARM64 Xvfb without registered SHAPE
         run: |
           set -euo pipefail
           SOURCE="$(cat evidence-build/source-directory.txt)"
@@ -100,14 +102,16 @@ jobs:
             -Dsecure-rpc=false \
             -Dlisten_tcp=true \
             2>&1 | tee evidence-build/meson-setup.log
-          ninja -C "$SOURCE/build-noshape" Xvfb \
+          ninja -v -C "$SOURCE/build-noshape" Xvfb \
             2>&1 | tee evidence-build/ninja-xvfb.log
           XVFB="$(find "$SOURCE/build-noshape" -type f -name Xvfb -perm -111 -print -quit)"
           test -n "$XVFB"
           install -D -m 0755 "$XVFB" output/Xvfb-no-shape
           file output/Xvfb-no-shape | tee evidence-build/xvfb-file.txt
           ldd output/Xvfb-no-shape | tee evidence-build/xvfb-ldd.txt
-          ! nm -A output/Xvfb-no-shape 2>/dev/null | grep -F ShapeExtensionInit
+          nm -A output/Xvfb-no-shape 2>/dev/null \
+            | grep -F ShapeExtensionInit \
+            | tee evidence-build/shape-symbol.txt
 
       - name: Prove compiled server does not advertise SHAPE
         run: |
@@ -126,6 +130,16 @@ jobs:
           kill "$PID"
           wait "$PID" || true
           trap - EXIT
+
+      - name: Upload no-SHAPE build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V18K_COMPILED_NOSHAPE_XVFB_BUILD_DIAGNOSTICS
+          path: |
+            evidence-build/
+            output/
+          if-no-files-found: warn
 
       - name: Upload compiled no-SHAPE Xvfb
         uses: actions/upload-artifact@v4
@@ -154,7 +168,7 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             curl unzip zstd file binutils x11-utils imagemagick procps \
-            gcc libx11-dev xserver-xorg-core xserver-xorg-video-dummy
+            gcc libx11-dev
           python3 -m py_compile tr_winlator_apk/materialize_main_wine_container.py
           bash -n tr_winlator_apk/run_v18k_noshape_variant.sh
 
