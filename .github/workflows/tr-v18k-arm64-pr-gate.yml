@@ -28,6 +28,7 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             curl unzip zstd file binutils xvfb x11-utils imagemagick procps
+          python3 -m py_compile tr_winlator_apk/materialize_main_wine_container.py
 
       - name: Download exact v18J APK internally
         env:
@@ -46,15 +47,18 @@ jobs:
           grep -F '4003bcb0c863519720116d93540e161d640800692c0e002f7e8ac42434e5a215' apk-sha256.txt
           cp "$APK" v18j.apk
 
-      - name: Extract exact Box64 Wine rootfs
+      - name: Reproduce Winlator main-Wine container creation
         run: |
           set -euo pipefail
           mkdir -p apk rootfs box64 prefix evidence
           unzip -q v18j.apk assets/rootfs.tzst assets/container_pattern.tzst \
-            assets/box64/box64-0.4.0.tzst -d apk
+            assets/common_dlls.json assets/box64/box64-0.4.0.tzst -d apk
           tar --use-compress-program=unzstd -xf apk/assets/rootfs.tzst -C rootfs
           tar --use-compress-program=unzstd -xf apk/assets/box64/box64-0.4.0.tzst -C box64
           tar --use-compress-program=unzstd -xf apk/assets/container_pattern.tzst -C prefix
+
+          python3 tr_winlator_apk/materialize_main_wine_container.py \
+            rootfs prefix apk/assets/common_dlls.json | tee container-materialization.txt
 
           sudo install -D -m 0755 box64/usr/local/bin/box64 rootfs/usr/local/bin/box64
           sudo mkdir -p rootfs/home/winlator rootfs/data/data/com.winlator.trcompat/files
@@ -69,7 +73,8 @@ jobs:
             rootfs/opt/wine/bin/wineserver | tee runtime-file-types.txt
           grep -F 'ARM aarch64' runtime-file-types.txt
           test "$(grep -c 'x86-64' runtime-file-types.txt)" -ge 2
-          test -f rootfs/opt/wine/lib/wine/x86_64-windows/explorer.exe
+          test -f rootfs/home/winlator/.wine/drive_c/windows/system32/kernel32.dll
+          test -f rootfs/home/winlator/.wine/drive_c/windows/system32/explorer.exe
 
       - name: Mount rootfs and start SHAPE X server
         run: |
@@ -153,4 +158,5 @@ jobs:
             runner-architecture.txt
             apk-sha256.txt
             runtime-file-types.txt
+            container-materialization.txt
           if-no-files-found: warn
