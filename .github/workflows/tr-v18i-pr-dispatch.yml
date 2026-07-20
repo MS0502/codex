@@ -1,0 +1,40 @@
+name: Dispatch TR v18i build from PR
+
+on:
+  pull_request:
+    branches: [tr-wine-compat-proton11-exact-wineserver-v18h]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  dispatch:
+    if: github.event.pull_request.head.ref == 'tr-wine-compat-proton11-runtime-closure-v18i'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch v18i build
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'tr-winlator-v18i-runtime-closure.yml',
+              ref: context.payload.pull_request.head.ref,
+            });
+
+      - name: Record dispatched run on PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sleep 30
+          RUNS=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/tr-winlator-v18i-runtime-closure.yml/runs?branch=tr-wine-compat-proton11-runtime-closure-v18i&per_page=5" \
+            --jq '[.workflow_runs[] | {id,run_number,event,status,conclusion,head_sha,created_at,updated_at,html_url}]')
+          BODY=$(printf 'v18i dispatched workflow status\n\n```json\n%s\n```\n' "$RUNS")
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.pull_request.number }}/comments" -f body="$BODY"

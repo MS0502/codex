@@ -1,0 +1,29 @@
+name: Probe TR v18j overlay v6 from PR
+
+on:
+  pull_request:
+    branches: [tr-wine-compat-proton11-runtime-closure-v18i]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  probe:
+    if: github.event.pull_request.head.ref == 'tr-wine-compat-proton11-native-wrapper-closure-v18j'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record current v18j overlay v6 runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUNS=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/tr-winlator-v18j-apk-overlay-v6.yml/runs?branch=tr-wine-compat-proton11-runtime-closure-v18i&per_page=5" \
+            --jq '[.workflow_runs[] | {id,run_number,event,status,conclusion,head_sha,created_at,updated_at,html_url}]')
+          echo "$RUNS"
+          BODY=$(printf 'v18j overlay v6 current workflow status\n\n```json\n%s\n```\n' "$RUNS")
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.pull_request.number }}/comments" -f body="$BODY"

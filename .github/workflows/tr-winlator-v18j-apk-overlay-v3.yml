@@ -1,0 +1,286 @@
+name: TR Winlator v18j native wrapper overlay APK v3
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-runtime-closure-v18i]
+    paths: [.github/workflows/tr-winlator-v18j-apk-overlay-v3.yml]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  overlay-and-sign:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ca-certificates file binutils unzip zip zstd
+
+      - name: Download proven v18i APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p base-artifact
+          gh run download 29679424111 \
+            -R "$GITHUB_REPOSITORY" \
+            -n WINLATOR_11_1_TR_COMPAT_APK_V18I_PROTON11_RUNTIME_CLOSURE \
+            -D base-artifact
+          BASE_APK="$(find base-artifact -type f -name '*.apk' -print -quit)"
+          test -n "$BASE_APK"
+          cp "$BASE_APK" base-v18i.apk
+          sha256sum base-v18i.apk | tee base-v18i-sha256.txt
+
+      - name: Extract v18i rootfs
+        run: |
+          set -euo pipefail
+          mkdir -p rootfs
+          unzip -p base-v18i.apk assets/rootfs.tzst > rootfs-v18i.tzst
+          test -s rootfs-v18i.tzst
+          tar --use-compress-program=unzstd -xf rootfs-v18i.tzst -C rootfs
+          test -d rootfs/usr
+
+      - name: Download pinned ARM64 wrapper libraries
+        run: |
+          set -euo pipefail
+          mkdir -p native-runtime
+          docker run --rm -v "$PWD/native-runtime:/out" ubuntu:22.04 bash -lc '
+            set -euo pipefail
+            sed -i "s/^deb /deb [arch=amd64] /" /etc/apt/sources.list
+            cat >> /etc/apt/sources.list <<"EOF"
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe
+          EOF
+            dpkg --add-architecture arm64
+            apt-get update
+            mkdir -p /tmp/debs
+            cd /tmp/debs
+            apt-get download \
+              libudev1:arm64 \
+              libusb-1.0-0:arm64 \
+              libxinerama1:arm64 \
+              libdbus-1-3:arm64
+            for package in ./*.deb; do dpkg-deb -x "$package" /out; done
+          '
+          find native-runtime -type f -o -type l | sort | tee native-runtime-files.txt
+
+      - name: Merge and audit native wrapper closure
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import shutil
+          import subprocess
+
+          root = Path('rootfs')
+          overlay = Path('native-runtime')
+
+          for source in sorted(overlay.rglob('*')):
+              relative = source.relative_to(overlay)
+              target = root / relative
+              if source.is_dir():
+                  target.mkdir(parents=True, exist_ok=True)
+                  continue
+              target.parent.mkdir(parents=True, exist_ok=True)
+              if target.exists() or target.is_symlink():
+                  if target.is_dir() and not target.is_symlink():
+                      shutil.rmtree(target)
+                  else:
+                      target.unlink()
+              if source.is_symlink():
+                  target.symlink_to(os.readlink(source))
+              else:
+                  shutil.copy2(source, target)
+
+          native_dir = root / 'usr/lib/aarch64-linux-gnu'
+          if not native_dir.is_dir():
+              raise SystemExit(f'missing ARM64 native directory: {native_dir}')
+
+          aliases = {
+              'libudev.so.0': 'libudev.so.1',
+              'libXinerama.so': 'libXinerama.so.1',
+          }
+          alias_rows = []
+          for alias, soname in aliases.items():
+              source = native_dir / soname
+              if not source.exists():
+                  raise SystemExit(f'missing native wrapper target: {source}')
+              target = native_dir / alias
+              if target.exists() or target.is_symlink():
+                  target.unlink()
+              target.symlink_to(source.name)
+              alias_rows.append(f'{target.relative_to(root)} -> {source.name}')
+
+          required = [
+              'libudev.so.1', 'libudev.so.0', 'libusb-1.0.so.0',
+              'libXinerama.so.1', 'libXinerama.so', 'libdbus-1.so.3',
+          ]
+          resolved = {}
+          for soname in required:
+              path = native_dir / soname
+              if not (path.exists() or path.is_symlink()):
+                  raise SystemExit(f'v18j rootfs missing {path}')
+              resolved[soname] = str(path.relative_to(root))
+
+          providers = {
+              path.name for path in root.rglob('*')
+              if path.is_file() or path.is_symlink()
+          }
+          core = {
+              'ld-linux-aarch64.so.1', 'libc.so.6', 'libdl.so.2',
+              'libm.so.6', 'libpthread.so.0', 'librt.so.1',
+              'libgcc_s.so.1', 'libresolv.so.2',
+          }
+          audit_rows = []
+          unresolved = {}
+          for soname in [
+              'libudev.so.1', 'libusb-1.0.so.0',
+              'libXinerama.so.1', 'libdbus-1.so.3',
+          ]:
+              path = native_dir / soname
+              output = subprocess.check_output(
+                  ['readelf', '-d', str(path)], text=True, errors='replace'
+              )
+              needed = re.findall(r'Shared library: \[([^\]]+)\]', output)
+              missing = sorted(
+                  name for name in needed
+                  if name not in providers and name not in core
+              )
+              audit_rows.append(f'{soname} needed={needed} unresolved={missing}')
+              if missing:
+                  unresolved[soname] = missing
+
+          report = '\n'.join([
+              'revision=v18j-proton11-native-wrapper-overlay-3',
+              'base_run=29679424111',
+              *[f'alias={row}' for row in alias_rows],
+              *[f'resolved_{name}={path}' for name, path in resolved.items()],
+              *audit_rows,
+              f'unresolved={unresolved}',
+              '',
+          ])
+          print(report)
+          Path('v18j-native-wrapper-closure-report.txt').write_text(
+              report, encoding='utf-8'
+          )
+          if unresolved:
+              raise SystemExit(f'native dependency closure incomplete: {unresolved}')
+
+          marker = root / 'etc/trcompat-v18j-native-wrapper-closure'
+          marker.parent.mkdir(parents=True, exist_ok=True)
+          marker.write_text(
+              'v18j-proton11-native-wrapper-overlay-3\n', encoding='ascii'
+          )
+          PY
+
+          while IFS= read -r path; do file -L "$path"; done \
+            < <(find rootfs/usr/lib/aarch64-linux-gnu \
+              \( -name 'libudev.so.1' -o -name 'libudev.so.0' \
+                 -o -name 'libusb-1.0.so.0' -o -name 'libXinerama.so.1' \
+                 -o -name 'libXinerama.so' -o -name 'libdbus-1.so.3' \)) \
+            | tee v18j-native-file-types.txt
+          grep -F 'ARM aarch64' v18j-native-file-types.txt
+          grep -F 'unresolved={}' v18j-native-wrapper-closure-report.txt
+
+      - name: Repack v18j rootfs
+        run: |
+          set -euo pipefail
+          tar --sort=name --owner=0 --group=0 --numeric-owner \
+            --mtime=@0 --format=gnu -C rootfs -cf rootfs-v18j.tar .
+          zstd -19 -f rootfs-v18j.tar -o rootfs-v18j.tzst
+          sha256sum rootfs-v18j.tzst | tee rootfs-v18j-sha256.txt
+          ls -lh rootfs-v18j.tzst
+
+      - name: Restore matching signing key
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: trcompat-debug-keystore-v1
+
+      - name: Require matching signing key
+        run: |
+          set -euo pipefail
+          test -f "$HOME/.android/debug.keystore"
+          keytool -list -keystore "$HOME/.android/debug.keystore" \
+            -storepass android -alias androiddebugkey >/dev/null
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android signing tools
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'build-tools;34.0.0'
+
+      - name: Replace rootfs and sign v18j APK
+        run: |
+          set -euo pipefail
+          mkdir -p apk-update/assets out-v18j
+          cp rootfs-v18j.tzst apk-update/assets/rootfs.tzst
+          cp base-v18i.apk unsigned-v18j.apk
+          zip -q -d unsigned-v18j.apk 'META-INF/*' || true
+          (cd apk-update && zip -q -u "$OLDPWD/unsigned-v18j.apk" assets/rootfs.tzst)
+
+          "$ANDROID_HOME/build-tools/34.0.0/zipalign" -f -p 4 \
+            unsigned-v18j.apk aligned-v18j.apk
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" sign \
+            --ks "$HOME/.android/debug.keystore" \
+            --ks-key-alias androiddebugkey \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --out out-v18j/Winlator_11.1_TR_Compat_v18J_PROTON11_NATIVE_WRAPPER_OVERLAY.apk \
+            aligned-v18j.apk
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify \
+            --verbose --print-certs \
+            out-v18j/Winlator_11.1_TR_Compat_v18J_PROTON11_NATIVE_WRAPPER_OVERLAY.apk \
+            | tee v18j-apksigner-verify.txt
+
+          unzip -p out-v18j/*.apk assets/rootfs.tzst > embedded-rootfs-v18j.tzst
+          cmp rootfs-v18j.tzst embedded-rootfs-v18j.tzst
+          cp v18j-native-wrapper-closure-report.txt out-v18j/
+          sha256sum out-v18j/*.apk | tee out-v18j/SHA256SUMS.txt
+          ls -lh out-v18j/*
+
+      - name: Upload v18j APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V18J_PROTON11_NATIVE_WRAPPER_OVERLAY
+          path: out-v18j/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_V18J_OVERLAY_V3_BUILD_LOG
+          path: |
+            base-v18i-sha256.txt
+            native-runtime-files.txt
+            v18j-native-wrapper-closure-report.txt
+            v18j-native-file-types.txt
+            rootfs-v18j-sha256.txt
+            v18j-apksigner-verify.txt
+            out-v18j/SHA256SUMS.txt
+          if-no-files-found: warn
+          retention-days: 30
