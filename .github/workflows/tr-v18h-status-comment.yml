@@ -16,14 +16,21 @@ jobs:
   report:
     runs-on: ubuntu-latest
     steps:
-      - name: Report latest v18h run to PR 16
+      - name: Report latest v18h run and artifacts to PR 16
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          sleep 25
+          sleep 15
           RUNS=$(gh api \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/tr-winlator-v18h-exact-wineserver.yml/runs?branch=tr-wine-compat-proton11-exact-wineserver-v18h&per_page=5" \
             --jq '[.workflow_runs[] | {id,run_number,status,conclusion,head_sha,created_at,updated_at,html_url}]')
-          BODY=$(printf 'v18h workflow status\n\n```json\n%s\n```\n' "$RUNS")
+          RUN_ID=$(jq -r 'map(select(.conclusion == "success"))[0].id // empty' <<<"$RUNS")
+          if [ -n "$RUN_ID" ]; then
+            ARTIFACTS=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts" \
+              --jq '[.artifacts[] | {id,name,size_in_bytes,expired,created_at,expires_at}]')
+          else
+            ARTIFACTS='[]'
+          fi
+          BODY=$(printf 'v18h refreshed workflow status\n\nRuns:\n```json\n%s\n```\n\nLatest successful artifacts:\n```json\n%s\n```\n' "$RUNS" "$ARTIFACTS")
           gh api "repos/${GITHUB_REPOSITORY}/issues/16/comments" -f body="$BODY"
