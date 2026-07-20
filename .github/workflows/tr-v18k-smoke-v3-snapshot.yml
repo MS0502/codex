@@ -1,0 +1,26 @@
+name: Snapshot v18K ARM64 baseline v3
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-xshape-restore-v18k]
+    paths: [.github/workflows/tr-v18k-smoke-v3-snapshot.yml]
+
+permissions:
+  actions: read
+  issues: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Post current state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/tr-v18k-arm64-runtime-smoke-v3.yml/runs?branch=tr-wine-compat-proton11-xshape-restore-v18k&per_page=1" --jq '.workflow_runs[0]')"
+          ID="$(jq -r .id <<<"$RUN")"
+          STATUS="$(jq -r .status <<<"$RUN")"
+          CONCLUSION="$(jq -r '.conclusion // "pending"' <<<"$RUN")"
+          BODY="ARM64 Explorer baseline v3 snapshot: run ${ID}, status **${STATUS}**, conclusion **${CONCLUSION}**."
+          gh api "repos/${GITHUB_REPOSITORY}/issues/19/comments" -f body="$BODY"
