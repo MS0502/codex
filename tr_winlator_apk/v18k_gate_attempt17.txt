@@ -1,0 +1,1 @@
+Attempt 17: run the exact v18J Winlator shell on the proven true no-SHAPE ARM64 X server and inspect Shell_TrayWnd plus its zero-ID Start button from inside Wine at 12 and 50 seconds. No APK or game file is changed.
