@@ -22,5 +22,5 @@ jobs:
           ID="$(jq -r .id <<<"$RUN")"
           STATUS="$(jq -r .status <<<"$RUN")"
           CONCLUSION="$(jq -r '.conclusion // "pending"' <<<"$RUN")"
-          BODY="ARM64 Explorer baseline v3 snapshot: run ${ID}, status **${STATUS}**, conclusion **${CONCLUSION}**."
+          BODY="ARM64 Explorer baseline v3 refreshed snapshot: run ${ID}, status **${STATUS}**, conclusion **${CONCLUSION}**."
           gh api "repos/${GITHUB_REPOSITORY}/issues/19/comments" -f body="$BODY"
