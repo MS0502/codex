@@ -2,8 +2,19 @@ name: TR v18K v12-v18J WFM map A-B
 
 on:
   push:
-    branches: [tr-wine-compat-proton11-xshape-restore-v18k]
-    paths: [.github/workflows/tr-v18k-v12-v18j-wfm-map-ab.yml]
+    branches:
+      - tr-wine-compat-proton11-xshape-restore-v18k
+    paths:
+      - .github/workflows/tr-v18k-v12-v18j-wfm-map-ab.yml
+      - tr_winlator_apk/run_v12_v18j_wfm_map_ab.sh
+      - tr_winlator_apk/x11_map_watch.c
+  pull_request:
+    branches:
+      - tr-wine-compat-proton11-native-wrapper-closure-v18j
+    paths:
+      - .github/workflows/tr-v18k-v12-v18j-wfm-map-ab.yml
+      - tr_winlator_apk/run_v12_v18j_wfm_map_ab.sh
+      - tr_winlator_apk/x11_map_watch.c
   workflow_dispatch:
 
 permissions:
