@@ -43,6 +43,7 @@ sha256sum runtime.apk | tee "$EVIDENCE/apk-sha256.txt"
 
 unzip -q runtime.apk \
   assets/rootfs.tzst \
+  assets/rootfs_patches.tzst \
   assets/container_pattern.tzst \
   assets/box64/box64-0.4.0.tzst \
   assets/common_dlls.json \
@@ -63,6 +64,11 @@ sudo ln -sfn /etc/machine-id rootfs/var/lib/dbus/machine-id
 sudo python3 tr_winlator_apk/materialize_main_wine_container.py \
   rootfs rootfs/home/xuser apk/assets/common_dlls.json \
   | tee "$EVIDENCE/container-materialization.txt"
+
+# Winlator's app-level shell executables are delivered by rootfs_patches,
+# not by rootfs.tzst or container_pattern.tzst. Apply them before hashing
+# or launching the exact C:\windows\winhandler.exe -> wfm/cmd path.
+sudo tar --use-compress-program=unzstd -xf apk/assets/rootfs_patches.tzst -C rootfs
 
 file rootfs/usr/local/bin/box64 rootfs/opt/wine/bin/wine \
   rootfs/opt/wine/bin/wineserver \
@@ -139,7 +145,7 @@ for second in 3 10 20 40 60; do
   if [ "$STARTUP" = wfm ]; then
     ID="$(awk '/"Computer"/ {print $1; exit}' "$TREE")"
   else
-    ID="$(awk '/cmd.exe"/ {print $1; exit}' "$TREE")"
+    ID="$(awk '/cmd.exe/ {print $1; exit}' "$TREE")"
   fi
 
   if [ -n "$ID" ]; then
