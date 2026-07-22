@@ -169,7 +169,7 @@ printf 'runtime=%s\nstartup=%s\nexe=%s\ndisplay=%s\nandroid_tmp=%s\n' \
 sudo env HOME=/home/xuser USER=xuser DISPLAY="$TCP_DISPLAY" XAUTHORITY=/dev/null \
   TMPDIR="$ANDROID_TMP" XDG_RUNTIME_DIR="$ANDROID_TMP" \
   WINEPREFIX=/home/xuser/.wine WINEDEBUG=warn+all,err+all \
-  WINEESYNC=1 WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER=1 \
+  WINEESYNC=0 WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER=1 \
   MESA_DEBUG=silent MESA_NO_ERROR=1 \
   PATH=/opt/wine/bin:/usr/local/bin:/usr/bin:/bin \
   LD_LIBRARY_PATH=/lib:/usr/lib:/usr/lib/aarch64-linux-gnu \
