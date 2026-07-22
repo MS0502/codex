@@ -70,6 +70,10 @@ sudo python3 tr_winlator_apk/materialize_main_wine_container.py \
 # or launching the exact C:\windows\winhandler.exe -> wfm/cmd path.
 sudo tar --use-compress-program=unzstd -xf apk/assets/rootfs_patches.tzst -C rootfs
 
+# The archived prefix may preserve a non-root owner. This harness launches
+# Wine as root inside chroot, so normalize ownership after every extraction.
+sudo chown -R 0:0 rootfs/home/xuser/.wine
+
 file rootfs/usr/local/bin/box64 rootfs/opt/wine/bin/wine \
   rootfs/opt/wine/bin/wineserver \
   rootfs/opt/wine/lib/wine/x86_64-unix/winex11.so \
