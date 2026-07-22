@@ -54,6 +54,7 @@ jobs:
             '
 
           TRACER=package/TR_PHYSICAL_X11_TRACE/payload/tr_x11_map_watch
+          sudo chown "$(id -u):$(id -g)" "$TRACER"
           patchelf --set-interpreter \
             /data/data/com.winlator.trcompat/files/rootfs/lib/ld-linux-aarch64.so.1 \
             "$TRACER"
@@ -68,10 +69,13 @@ jobs:
           readelf -d "$TRACER" | tee tracer-dynamic.txt
           objdump -T "$TRACER" | grep -o 'GLIBC_[0-9.]*' | sort -Vu \
             | tee tracer-glibc-symbols.txt
-          test "$(tail -n1 tracer-glibc-symbols.txt)" != 'GLIBC_2.36'
-          test "$(tail -n1 tracer-glibc-symbols.txt)" != 'GLIBC_2.37'
-          test "$(tail -n1 tracer-glibc-symbols.txt)" != 'GLIBC_2.38'
-          test "$(tail -n1 tracer-glibc-symbols.txt)" != 'GLIBC_2.39'
+          highest_glibc="$(tail -n1 tracer-glibc-symbols.txt)"
+          case "$highest_glibc" in
+            GLIBC_2.3[6-9]|GLIBC_2.[4-9][0-9]|GLIBC_[3-9].*)
+              echo "unsupported rootfs ABI requirement: $highest_glibc" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Assemble reversible Termux package
         run: |
