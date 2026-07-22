@@ -1,0 +1,158 @@
+name: TR v18K physical X11 map trace package
+
+on:
+  push:
+    branches:
+      - tr-wine-compat-proton11-xshape-restore-v18k
+    paths:
+      - .github/workflows/tr-v18k-physical-x11-trace.yml
+      - tr_winlator_apk/x11_map_watch.c
+      - tr_winlator_apk/hotpatch/physical_x11_trace.sh
+  pull_request:
+    branches:
+      - tr-wine-compat-proton11-native-wrapper-closure-v18j
+    paths:
+      - .github/workflows/tr-v18k-physical-x11-trace.yml
+      - tr_winlator_apk/x11_map_watch.c
+      - tr_winlator_apk/hotpatch/physical_x11_trace.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-trace-package:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: |
+          set -euo pipefail
+          test "$(dpkg --print-architecture)" = arm64
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            patchelf file binutils tar gzip
+
+      - name: Build ARM64 tracer against Ubuntu 22.04 ABI
+        run: |
+          set -euo pipefail
+          mkdir -p package/TR_PHYSICAL_X11_TRACE/payload out
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD:/work" -w /work ubuntu:22.04 bash -lc '
+              set -euo pipefail
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                gcc libc6-dev libx11-dev binutils
+              gcc -O2 -Wall -Wextra -Werror \
+                tr_winlator_apk/x11_map_watch.c \
+                -o package/TR_PHYSICAL_X11_TRACE/payload/tr_x11_map_watch \
+                -lX11
+              strip --strip-unneeded \
+                package/TR_PHYSICAL_X11_TRACE/payload/tr_x11_map_watch
+            '
+
+          TRACER=package/TR_PHYSICAL_X11_TRACE/payload/tr_x11_map_watch
+          patchelf --set-interpreter \
+            /data/data/com.winlator.trcompat/files/rootfs/lib/ld-linux-aarch64.so.1 \
+            "$TRACER"
+          patchelf --set-rpath \
+            /data/data/com.winlator.trcompat/files/rootfs/lib/aarch64-linux-gnu:/data/data/com.winlator.trcompat/files/rootfs/usr/lib/aarch64-linux-gnu:/data/data/com.winlator.trcompat/files/rootfs/lib:/data/data/com.winlator.trcompat/files/rootfs/usr/lib \
+            "$TRACER"
+          chmod 0755 "$TRACER"
+          file "$TRACER" | tee tracer-file.txt
+          grep -F 'ARM aarch64' tracer-file.txt
+          patchelf --print-interpreter "$TRACER" | tee tracer-interpreter.txt
+          patchelf --print-rpath "$TRACER" | tee tracer-rpath.txt
+          readelf -d "$TRACER" | tee tracer-dynamic.txt
+          objdump -T "$TRACER" | grep -o 'GLIBC_[0-9.]*' | sort -Vu \
+            | tee tracer-glibc-symbols.txt
+          test "$(tail -n1 tracer-glibc-symbols.txt)" != 'GLIBC_2.36'
+          test "$(tail -n1 tracer-glibc-symbols.txt)" != 'GLIBC_2.37'
+          test "$(tail -n1 tracer-glibc-symbols.txt)" != 'GLIBC_2.38'
+          test "$(tail -n1 tracer-glibc-symbols.txt)" != 'GLIBC_2.39'
+
+      - name: Assemble reversible Termux package
+        run: |
+          set -euo pipefail
+          ROOT=package/TR_PHYSICAL_X11_TRACE
+          cp tr_winlator_apk/hotpatch/physical_x11_trace.sh \
+            "$ROOT/physical_x11_trace.sh"
+          chmod 0755 "$ROOT/physical_x11_trace.sh"
+
+          cat > "$ROOT/payload/box64-wrapper" <<'SH'
+          #!/system/bin/sh
+          SELF_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+          REAL="$SELF_DIR/box64.trtrace.real"
+          TRACER="$SELF_DIR/tr_x11_map_watch"
+          TRACE_DIR="$SELF_DIR/../../../../tr_x11_trace"
+          LOCK="$TRACE_DIR/session.lock"
+
+          mkdir -p "$TRACE_DIR" 2>/dev/null || true
+          if [ -x "$TRACER" ] && [ -x "$REAL" ] && mkdir "$LOCK" 2>/dev/null; then
+            OUT="$TRACE_DIR/trace-$(date +%Y%m%d-%H%M%S)-$$.txt"
+            (
+              TR_X11_TRACE_DURATION=150 "$TRACER" "$OUT"
+              rm -rf "$LOCK"
+            ) >/dev/null 2>&1 &
+          fi
+
+          exec "$REAL" "$@"
+          SH
+          sed -i 's/^          //' "$ROOT/payload/box64-wrapper"
+          chmod 0755 "$ROOT/payload/box64-wrapper"
+          /bin/sh -n "$ROOT/payload/box64-wrapper"
+          bash -n "$ROOT/physical_x11_trace.sh"
+
+          cat > "$ROOT/README_KO.txt" <<'TXT'
+          이 패키지는 v18J Winlator의 물리 기기 X11 창 매핑 상태만 기록한다.
+          TalesRunner 또는 XIGNCODE 파일, 서비스, 장치 응답, 보안 결과는 변경하지 않는다.
+
+          1. Winlator TR Compat를 최근 앱에서도 완전히 종료한다.
+          2. Termux에서 압축을 풀고 다음을 실행한다.
+             bash physical_x11_trace.sh apply
+          3. Winlator를 열고 문제가 보이는 화면에서 30초 이상 기다린 뒤 완전히 종료한다.
+          4. Termux에서 수집과 원상복구를 한 번에 실행한다.
+             bash physical_x11_trace.sh finish
+          5. Download 폴더에 생성된 TR_X11_MAP_TRACE_*.tar.gz를 전달한다.
+
+          상태 확인: bash physical_x11_trace.sh status
+          수집만:     bash physical_x11_trace.sh collect
+          복원만:     bash physical_x11_trace.sh restore
+          TXT
+          sed -i 's/^          //' "$ROOT/README_KO.txt"
+
+          (
+            cd "$ROOT"
+            sha256sum payload/box64-wrapper payload/tr_x11_map_watch \
+              > SHA256SUMS.txt
+          )
+          cat "$ROOT/SHA256SUMS.txt"
+
+          tar --sort=name --owner=0 --group=0 --numeric-owner \
+            --mtime=@0 -C package -czf \
+            out/TR_PHYSICAL_X11_MAP_TRACE_TERMUX.tar.gz \
+            TR_PHYSICAL_X11_TRACE
+          sha256sum out/TR_PHYSICAL_X11_MAP_TRACE_TERMUX.tar.gz \
+            > out/TR_PHYSICAL_X11_MAP_TRACE_TERMUX.tar.gz.sha256
+          tar -tzf out/TR_PHYSICAL_X11_MAP_TRACE_TERMUX.tar.gz \
+            | tee package-list.txt
+          grep -F 'TR_PHYSICAL_X11_TRACE/physical_x11_trace.sh' package-list.txt
+          grep -F 'TR_PHYSICAL_X11_TRACE/payload/tr_x11_map_watch' package-list.txt
+          ls -lh out/*
+
+      - name: Upload physical trace package
+        uses: actions/upload-artifact@v4
+        with:
+          name: TR_PHYSICAL_X11_MAP_TRACE_TERMUX
+          path: |
+            out/*
+            tracer-file.txt
+            tracer-interpreter.txt
+            tracer-rpath.txt
+            tracer-dynamic.txt
+            tracer-glibc-symbols.txt
+            package-list.txt
+          if-no-files-found: error
+          retention-days: 30
