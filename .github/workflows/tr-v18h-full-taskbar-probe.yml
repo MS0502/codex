@@ -1,0 +1,88 @@
+name: TR v18H full taskbar comparison probe
+
+on:
+  pull_request:
+    branches: [tr-wine-compat-proton11-native-wrapper-closure-v18j]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  v18h-taskbar:
+    if: github.event.pull_request.head.ref == 'tr-wine-compat-proton11-xshape-restore-v18k'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    env:
+      NOSHAPE_XVFB_ARTIFACT_ID: '8452817968'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM64 and MinGW tools
+        run: |
+          set -euo pipefail
+          test "$(dpkg --print-architecture)" = arm64
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            curl unzip zstd file binutils x11-utils imagemagick procps \
+            gcc libx11-dev gcc-mingw-w64-x86-64
+          python3 -m py_compile tr_winlator_apk/materialize_main_wine_container.py
+          bash -n tr_winlator_apk/run_v18k_noshape_variant.sh
+          bash -n tr_winlator_apk/run_v18h_taskbar_exact.sh
+
+      - name: Build taskbar probe
+        run: |
+          set -euo pipefail
+          x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -mconsole \
+            tr_winlator_apk/taskbar_probe.c -o taskbar_probe.exe
+          file taskbar_probe.exe | tee taskbar-probe-file.txt
+          sha256sum taskbar_probe.exe | tee taskbar-probe-sha256.txt
+
+      - name: Install proven true no-SHAPE X server
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p noshape-artifact
+          curl --fail --location --retry 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${NOSHAPE_XVFB_ARTIFACT_ID}/zip" \
+            -o noshape-xvfb.zip
+          unzip -q noshape-xvfb.zip -d noshape-artifact
+          XVFB="$(find noshape-artifact -type f -name Xvfb-no-shape -print -quit)"
+          test -n "$XVFB"
+          printf '%s  %s\n' b6a9f2de820fc35b44409bfa0f863a4e5f63fcc1bbb4e52f6673033110e2668f "$XVFB" \
+            | sha256sum -c -
+          sudo install -D -m 0755 "$XVFB" /usr/local/libexec/Xvfb-no-shape
+          cat > Xorg <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ "${1:-}" != :* ]]; then exec /usr/local/libexec/Xvfb-no-shape -help; fi
+          exec /usr/local/libexec/Xvfb-no-shape "$1" -ac -screen 0 1280x720x24 -listen tcp
+          EOF
+          sudo install -D -m 0755 Xorg /usr/local/bin/Xorg
+
+      - name: Run full v18H taskbar probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tr_winlator_apk/run_v18h_taskbar_exact.sh
+
+      - name: Cleanup runtime
+        if: always()
+        run: |
+          sudo pkill -KILL -f Xvfb-no-shape 2>/dev/null || true
+          sudo pkill -KILL box64 2>/dev/null || true
+
+      - name: Upload full v18H taskbar evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V18H_FULL_TASKBAR_PROBE_EVIDENCE
+          path: |
+            evidence-v18h-taskbar/
+            v18h-taskbar-command.txt
+            taskbar-probe-file.txt
+            taskbar-probe-sha256.txt
+          if-no-files-found: warn

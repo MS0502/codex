@@ -1,0 +1,23 @@
+name: Prepare v18j native wrapper closure
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-native-wrapper-closure-v18j]
+    paths: [.github/workflows/tr-v18j-native-wrapper-prepare.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tr-wine-compat-proton11-native-wrapper-closure-v18j
+          fetch-depth: 0
+
+      - name: Overlay v6 probe notice
+        run: |
+          set -euo pipefail
+          echo "Probing the final ARM64 closure v6 run."
