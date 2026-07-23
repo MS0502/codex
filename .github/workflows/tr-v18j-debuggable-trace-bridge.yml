@@ -6,6 +6,11 @@ on:
       - tr-wine-compat-proton11-xshape-restore-v18k
     paths:
       - .github/workflows/tr-v18j-debuggable-trace-bridge.yml
+  pull_request:
+    branches:
+      - tr-wine-compat-proton11-native-wrapper-closure-v18j
+    paths:
+      - .github/workflows/tr-v18j-debuggable-trace-bridge.yml
   workflow_dispatch:
 
 permissions:
@@ -101,7 +106,7 @@ jobs:
           PY
           grep -F 'android:debuggable="true"' decoded/AndroidManifest.xml
 
-      - name: Rebuild, align and sign with matching key
+      - name: Restore matching signing key
         uses: actions/cache@v4
         with:
           path: ~/.android/debug.keystore
