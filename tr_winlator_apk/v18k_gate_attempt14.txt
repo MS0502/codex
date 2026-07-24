@@ -1,0 +1,1 @@
+Attempt 14: use the proven compiled ARM64 no-SHAPE Xvfb artifact directly and run the v18J baseline versus XShape-restored runtime comparison. No APK or game file is changed.

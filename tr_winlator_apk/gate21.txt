@@ -1,0 +1,1 @@
+Trigger taskbar comparison workflow. No application package changes.
