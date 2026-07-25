@@ -12,17 +12,33 @@ ORIGINAL_BOX64_SHA256='2c6f9846e327dba80a210572d16b1811f6dd041c850e48b2d02b34677
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PAYLOAD="$HERE/payload"
 SUMS="$HERE/SHA256SUMS.txt"
+ADB_BIN="${ADB:-adb}"
 
 fail() { echo "오류: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || fail "$1 명령을 찾을 수 없음"; }
-app_sha() {
-  run-as "$PKG" sh -c "if command -v sha256sum >/dev/null 2>&1; then sha256sum '$1'; else toybox sha256sum '$1'; fi" \
-    | awk '{print $1}'
+
+adb_app_sh() {
+  "$ADB_BIN" shell run-as "$PKG" sh -c "$1"
 }
-app_exists() { run-as "$PKG" sh -c "test -e '$1'"; }
+
+require_adb_shell() {
+  need "$ADB_BIN"
+  [ "$("$ADB_BIN" get-state 2>/dev/null || true)" = device ] || \
+    fail '무선 ADB 연결이 없음. Termux에서 android-tools를 설치하고 이 폰의 무선 디버깅에 adb pair / adb connect 한 뒤 다시 실행해.'
+  "$ADB_BIN" shell id 2>/dev/null | tr -d '\r' | grep -q 'uid=2000(shell)' || \
+    fail 'ADB 연결은 있지만 shell 사용자 확인에 실패함.'
+  "$ADB_BIN" shell run-as "$PKG" id >/dev/null 2>&1 || \
+    fail 'ADB shell의 run-as가 앱에 접근하지 못함. 현재 설치된 v18J가 debuggable인지 확인이 필요함.'
+}
+
+app_sha() {
+  adb_app_sh "if command -v sha256sum >/dev/null 2>&1; then sha256sum '$1'; else toybox sha256sum '$1'; fi" \
+    | tr -d '\r' | awk '{print $1}'
+}
+app_exists() { adb_app_sh "test -e '$1'" >/dev/null 2>&1; }
 stream_install() {
   local source="$1" target="$2" mode="$3" expected="$4"
-  cat "$source" | run-as "$PKG" sh -c \
+  cat "$source" | "$ADB_BIN" shell run-as "$PKG" sh -c \
     "umask 022; cat > '${target}.new'; chmod '$mode' '${target}.new'; mv -f '${target}.new' '$target'"
   [ "$(app_sha "$target")" = "$expected" ] || fail "$target 설치 후 해시 검증 실패"
 }
@@ -54,7 +70,7 @@ collect_trace() {
   fi
   mkdir -p "$output_dir"
   output="$output_dir/TR_X11_MAP_TRACE_$(date +%Y%m%d-%H%M%S).tar.gz"
-  run-as "$PKG" sh -c \
+  "$ADB_BIN" exec-out run-as "$PKG" sh -c \
     "test -d '$TRACE_DIR'; test -n \"\$(find '$TRACE_DIR' -maxdepth 1 -type f -name 'trace-*.txt' -print -quit)\"; tar -C '$TRACE_DIR' -cf - ." \
     | gzip -9 > "$output"
   test -s "$output" || fail '추적 파일 수집 결과가 비어 있음'
@@ -66,7 +82,7 @@ restore_box64() {
   app_exists "$BOX64_REAL" || fail '복원용 box64 백업이 없음'
   backup="$(app_sha "$BOX64_REAL")"
   [ "$backup" = "$ORIGINAL_BOX64_SHA256" ] || fail '복원용 box64 해시가 기준과 다름'
-  run-as "$PKG" sh -c \
+  adb_app_sh \
     "cp -p '$BOX64_REAL' '${BOX64}.new'; chmod 0755 '${BOX64}.new'; mv -f '${BOX64}.new' '$BOX64'; rm -f '$TRACER' '$BOX64_REAL'; rm -rf '$TRACE_DIR/session.lock'"
   [ "$(app_sha "$BOX64")" = "$ORIGINAL_BOX64_SHA256" ] || fail 'box64 원본 복원 검증 실패'
   echo 'v18J 원본 box64로 복원 완료.'
@@ -76,8 +92,7 @@ case "$MODE" in apply|collect|restore|finish|status) ;;
   *) fail '사용법: bash physical_x11_trace.sh [apply|collect|restore|finish|status]' ;;
 esac
 
-need run-as
-run-as "$PKG" id >/dev/null 2>&1 || fail '앱 데이터 접근이 차단됨. 디버그 빌드인지 확인 필요'
+require_adb_shell
 
 case "$MODE" in
   status)
@@ -93,7 +108,7 @@ case "$MODE" in
     [ "$current" = "$ORIGINAL_BOX64_SHA256" ] || fail '현재 box64가 검증된 v18J 원본과 다름. 적용 중단'
     echo 'Winlator TR Compat를 최근 앱 화면에서도 완전히 종료해.'
     sleep 3
-    run-as "$PKG" sh -c \
+    adb_app_sh \
       "mkdir -p '$TRACE_DIR'; rm -rf '$TRACE_DIR/session.lock'; test -f '$BOX64_REAL' || cp -p '$BOX64' '$BOX64_REAL'"
     [ "$(app_sha "$BOX64_REAL")" = "$ORIGINAL_BOX64_SHA256" ] || fail 'box64 백업 검증 실패'
     stream_install "$PAYLOAD/tr_x11_map_watch" "$TRACER" 0755 "$(expected_sha tr_x11_map_watch)"
