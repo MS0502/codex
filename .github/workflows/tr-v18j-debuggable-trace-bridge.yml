@@ -90,19 +90,8 @@ jobs:
               tag2 = tag[:-1] + ' android:debuggable="true">'
           text = text[:app_match.start()] + tag2 + text[app_match.end():]
 
-          vc = re.search(r'android:versionCode="(\d+)"', text)
-          if not vc:
-              raise SystemExit('versionCode not found')
-          old = int(vc.group(1))
-          text = text[:vc.start(1)] + str(old + 1) + text[vc.end(1):]
-
-          vn = re.search(r'android:versionName="([^"]*)"', text)
-          if vn:
-              value = vn.group(1)
-              text = text[:vn.start(1)] + value + '-tracebridge' + text[vn.end(1):]
-
           manifest.write_text(text, encoding='utf-8')
-          print(f'versionCode {old} -> {old + 1}')
+          print('enabled android:debuggable=true; preserved original APK version metadata')
           PY
           grep -F 'android:debuggable="true"' decoded/AndroidManifest.xml
 
