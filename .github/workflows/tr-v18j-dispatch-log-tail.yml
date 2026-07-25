@@ -1,0 +1,29 @@
+name: Extract v18j overlay failure tail
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch failed overlay job tail
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/${GITHUB_REPOSITORY}/actions/jobs/88190963073/logs > /tmp/v18j-overlay.log
+          tail -n 220 /tmp/v18j-overlay.log > /tmp/tail.txt
+          test -s /tmp/tail.txt
+
+      - name: Upload tail
+        uses: actions/upload-artifact@v4
+        with:
+          name: V18J_OVERLAY_FAILURE_TAIL
+          path: /tmp/tail.txt
+          if-no-files-found: error
+          retention-days: 7

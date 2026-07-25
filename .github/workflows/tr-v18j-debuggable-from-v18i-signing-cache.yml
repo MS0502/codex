@@ -1,0 +1,142 @@
+name: TR v18J debuggable from v18I signing cache
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-runtime-closure-v18i]
+    paths: [.github/workflows/tr-v18j-debuggable-from-v18i-signing-cache.yml]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  recover-sign-and-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install APK rebuild tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y apktool curl unzip zip file
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android signing tools
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'build-tools;34.0.0'
+
+      - name: Download exact v18J APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/repos/MS0502/codex/actions/artifacts/8442434345/zip \
+            -o v18j-artifact.zip
+          mkdir base
+          unzip -q v18j-artifact.zip -d base
+          BASE_APK="$(find base -type f -name '*.apk' -print -quit)"
+          test -n "$BASE_APK"
+          cp "$BASE_APK" base-v18j.apk
+          echo '4003bcb0c863519720116d93540e161d640800692c0e002f7e8ac42434e5a215  base-v18j.apk' | sha256sum -c -
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs base-v18j.apk | tee base-signer.txt
+
+      - name: Restore exact v18I branch signing cache
+        id: debug-key-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: trcompat-debug-keystore-v1
+
+      - name: Verify recovered key matches v18J certificate
+        run: |
+          set -euo pipefail
+          echo "cache_hit=${{ steps.debug-key-cache.outputs.cache-hit }}"
+          test "${{ steps.debug-key-cache.outputs.cache-hit }}" = 'true'
+          test -f "$HOME/.android/debug.keystore"
+          keytool -list -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey >/dev/null
+          cp base-v18j.apk probe.apk
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" sign \
+            --ks "$HOME/.android/debug.keystore" \
+            --ks-key-alias androiddebugkey \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --out resigned-probe.apk probe.apk
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs resigned-probe.apk | tee recovered-signer.txt
+          grep '^Signer #1 certificate SHA-256 digest:' base-signer.txt > base-cert.txt
+          grep '^Signer #1 certificate SHA-256 digest:' recovered-signer.txt > recovered-cert.txt
+          diff -u base-cert.txt recovered-cert.txt
+
+      - name: Decode and enable debuggable only
+        run: |
+          set -euo pipefail
+          apktool d -f base-v18j.apk -o decoded
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path('decoded/AndroidManifest.xml')
+          text = p.read_text(encoding='utf-8')
+          if 'package="com.winlator.trcompat"' not in text:
+              raise SystemExit('unexpected package')
+          m = re.search(r'<application\b[^>]*>', text)
+          if not m:
+              raise SystemExit('application tag not found')
+          tag = m.group(0)
+          if 'android:debuggable=' in tag:
+              tag2 = re.sub(r'android:debuggable="[^"]*"', 'android:debuggable="true"', tag)
+          else:
+              tag2 = tag[:-1] + ' android:debuggable="true">'
+          text = text[:m.start()] + tag2 + text[m.end():]
+          p.write_text(text, encoding='utf-8')
+          PY
+          grep -F 'android:debuggable="true"' decoded/AndroidManifest.xml
+
+      - name: Rebuild and sign update APK
+        run: |
+          set -euo pipefail
+          apktool b decoded -o unsigned.apk
+          "$ANDROID_HOME/build-tools/34.0.0/zipalign" -f -p 4 unsigned.apk aligned.apk
+          mkdir -p out
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" sign \
+            --ks "$HOME/.android/debug.keystore" \
+            --ks-key-alias androiddebugkey \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --out out/Winlator_11.1_TR_Compat_v18J_DEBUGGABLE_TRACE_BRIDGE.apk \
+            aligned.apk
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs out/Winlator_11.1_TR_Compat_v18J_DEBUGGABLE_TRACE_BRIDGE.apk | tee new-signer.txt
+          grep '^Signer #1 certificate SHA-256 digest:' new-signer.txt > new-cert.txt
+          diff -u base-cert.txt new-cert.txt
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging out/Winlator_11.1_TR_Compat_v18J_DEBUGGABLE_TRACE_BRIDGE.apk | tee badging.txt
+          grep -F "package: name='com.winlator.trcompat'" badging.txt
+          sha256sum out/*.apk | tee out/SHA256SUMS.txt
+
+      - name: Upload debuggable update APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_V18J_DEBUGGABLE_V18I_KEY
+          path: |
+            out/*
+            base-signer.txt
+            recovered-signer.txt
+            new-signer.txt
+            badging.txt
+          if-no-files-found: error
+          retention-days: 30

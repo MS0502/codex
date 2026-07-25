@@ -1,0 +1,29 @@
+name: TR v18i status reporter
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-runtime-closure-v18i]
+    paths:
+      - '.github/workflows/tr-v18i-status-comment.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  issues: write
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report latest v18i run to PR 17
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sleep 30
+          RUNS=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/tr-winlator-v18i-runtime-closure.yml/runs?branch=tr-wine-compat-proton11-runtime-closure-v18i&per_page=5" \
+            --jq '[.workflow_runs[] | {id,run_number,status,conclusion,head_sha,created_at,updated_at,html_url}]')
+          BODY=$(printf 'v18i workflow status\n\n```json\n%s\n```\n' "$RUNS")
+          gh api "repos/${GITHUB_REPOSITORY}/issues/17/comments" -f body="$BODY"

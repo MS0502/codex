@@ -1,0 +1,26 @@
+name: Report v18j overlay status
+
+on:
+  workflow_run:
+    workflows: [TR Winlator v18j native wrapper overlay APK]
+    types: [requested, in_progress, completed]
+    branches: [tr-wine-compat-proton11-runtime-closure-v18i]
+
+permissions:
+  issues: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment status on PR 18
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_STATUS: ${{ github.event.workflow_run.status }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          BODY=$(printf 'v18j overlay workflow status\n\n- run: `%s`\n- status: `%s`\n- conclusion: `%s`\n- head: `%s`\n' "$RUN_ID" "$RUN_STATUS" "$RUN_CONCLUSION" "$RUN_SHA")
+          gh api repos/${GITHUB_REPOSITORY}/issues/18/comments -f body="$BODY"
