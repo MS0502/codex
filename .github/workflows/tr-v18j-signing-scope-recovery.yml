@@ -96,25 +96,50 @@ jobs:
           diff -u base-cert.txt recovered-cert.txt
 
       - name: Decode only what the bridge needs
+        id: decode
         run: |
-          set -euo pipefail
-          # -r and -s deliberately keep resources and DEX payloads opaque.
-          # Apktool may stage those raw members internally rather than at the
-          # decoded directory root, so do not assume decoded/resources.arsc or
-          # decoded/classes.dex paths here.  The post-build ZIP verifier below
-          # is the authoritative preservation check.
-          java -jar apktool.jar d -f -r -s --force-manifest base-v18j.apk -o decoded
-          test -s decoded/AndroidManifest.xml
-          grep -F 'package="com.winlator.trcompat"' decoded/AndroidManifest.xml
+          set +e
+          java -jar apktool.jar d -f -r -s --force-manifest base-v18j.apk -o decoded > decode.log 2>&1
+          rc=$?
+          echo "APKTOOL_DECODE_RC=$rc" | tee decode-status.txt
+          if [ -d decoded ]; then
+            find decoded -maxdepth 2 -type f -printf '%P\n' | sort | head -200 > decoded-files.txt
+          else
+            echo 'decoded directory absent' > decoded-files.txt
+          fi
+          if [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
+          if [ ! -s decoded/AndroidManifest.xml ]; then
+            echo 'decoded AndroidManifest.xml missing/empty' | tee -a decode-status.txt
+            exit 21
+          fi
+          if ! grep -F 'package="com.winlator.trcompat"' decoded/AndroidManifest.xml >/dev/null; then
+            echo 'expected package text not found in decoded manifest' | tee -a decode-status.txt
+            sed -n '1,80p' decoded/AndroidManifest.xml > manifest-head.txt
+            exit 22
+          fi
+          echo 'manifest decode checks passed' | tee -a decode-status.txt
+
+      - name: Upload decode diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V18J_DEBUGGABLE_DECODE_DIAGNOSTICS
+          path: |
+            decode.log
+            decode-status.txt
+            decoded-files.txt
+            manifest-head.txt
+            decoded/AndroidManifest.xml
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Build minimal-change debuggable v18J
         run: |
           set -euo pipefail
-          # Apktool 2.x: -d/--debug adds android:debuggable="true".
           java -jar apktool.jar b -d decoded -o unsigned.apk
 
-          # The bridge is allowed to change the manifest and signatures only.
-          # Prove that every other APK member remains byte-identical.
           python3 - <<'PY'
           import hashlib
           import zipfile
