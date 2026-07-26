@@ -1,0 +1,38 @@
+name: TR v18J signing cache scope probe
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-native-wrapper-closure-v18j]
+    paths: [.github/workflows/tr-v18j-signing-cache-scope-probe.yml]
+  pull_request:
+    branches: [tr-wine-compat-proton11-runtime-closure-v18i]
+    paths: [.github/workflows/tr-v18j-signing-cache-scope-probe.yml]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Restore historical TR Compat signing key
+        id: debug-key-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: trcompat-debug-keystore-v1
+
+      - name: Report cache scope
+        run: |
+          set -euo pipefail
+          echo "EVENT=${{ github.event_name }}"
+          echo "REF=${{ github.ref }}"
+          echo "CACHE_HIT=${{ steps.debug-key-cache.outputs.cache-hit }}"
+          if [ -f "$HOME/.android/debug.keystore" ]; then
+            echo 'KEYSTORE_PRESENT=true'
+          else
+            echo 'KEYSTORE_PRESENT=false'
+          fi
+          test "${{ steps.debug-key-cache.outputs.cache-hit }}" = 'true'
+          test -f "$HOME/.android/debug.keystore"
