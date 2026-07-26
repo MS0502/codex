@@ -98,13 +98,14 @@ jobs:
       - name: Decode only what the bridge needs
         run: |
           set -euo pipefail
-          # Keep compiled resources and DEX payloads raw.  We only need a
-          # rebuildable manifest; Apktool's -d/--debug build flag will set
-          # android:debuggable without hand-editing application resources.
+          # -r and -s deliberately keep resources and DEX payloads opaque.
+          # Apktool may stage those raw members internally rather than at the
+          # decoded directory root, so do not assume decoded/resources.arsc or
+          # decoded/classes.dex paths here.  The post-build ZIP verifier below
+          # is the authoritative preservation check.
           java -jar apktool.jar d -f -r -s --force-manifest base-v18j.apk -o decoded
           test -s decoded/AndroidManifest.xml
-          test -s decoded/resources.arsc
-          find decoded -maxdepth 1 -type f -name 'classes*.dex' -print -quit | grep -q .
+          grep -F 'package="com.winlator.trcompat"' decoded/AndroidManifest.xml
 
       - name: Build minimal-change debuggable v18J
         run: |
