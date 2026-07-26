@@ -69,6 +69,7 @@ jobs:
           cp "$BASE_APK" base-v18j.apk
           echo '4003bcb0c863519720116d93540e161d640800692c0e002f7e8ac42434e5a215  base-v18j.apk' | sha256sum -c -
           "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs base-v18j.apk | tee base-signer.txt
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump xmltree base-v18j.apk AndroidManifest.xml > base-manifest-tree.txt
 
       - name: Restore historical TR Compat signing key
         id: debug-key-cache
@@ -95,75 +96,72 @@ jobs:
           grep '^Signer #1 certificate SHA-256 digest:' resigned-signer.txt > recovered-cert.txt
           diff -u base-cert.txt recovered-cert.txt
 
-      - name: Decode only what the bridge needs
-        id: decode
-        run: |
-          set +e
-          java -jar apktool.jar d -f -r -s base-v18j.apk -o decoded > decode.log 2>&1
-          rc=$?
-          echo "APKTOOL_DECODE_RC=$rc" | tee decode-status.txt
-          if [ -d decoded ]; then
-            find decoded -maxdepth 2 -type f -printf '%P\n' | sort | head -200 > decoded-files.txt
-          else
-            echo 'decoded directory absent' > decoded-files.txt
-          fi
-          if [ "$rc" -ne 0 ]; then
-            exit "$rc"
-          fi
-          if [ ! -s decoded/AndroidManifest.xml ]; then
-            echo 'decoded AndroidManifest.xml missing/empty' | tee -a decode-status.txt
-            exit 21
-          fi
-          if ! grep -F 'package="com.winlator.trcompat"' decoded/AndroidManifest.xml >/dev/null; then
-            echo 'expected package text not found in decoded manifest' | tee -a decode-status.txt
-            sed -n '1,80p' decoded/AndroidManifest.xml > manifest-head.txt
-            exit 22
-          fi
-          echo 'manifest decode checks passed' | tee -a decode-status.txt
-
-      - name: Upload decode diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: V18J_DEBUGGABLE_DECODE_DIAGNOSTICS
-          path: |
-            decode.log
-            decode-status.txt
-            decoded-files.txt
-            manifest-head.txt
-            decoded/AndroidManifest.xml
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Build minimal-change debuggable v18J
+      - name: Compile debuggable manifest with pinned Apktool
+        id: compile-manifest
         run: |
           set -euo pipefail
-          java -jar apktool.jar b -d decoded -o unsigned.apk
+          # Decode resources + manifest so Apktool can compile a valid binary
+          # manifest. DEX remains opaque because no source change is needed.
+          java -jar apktool.jar d -f -s base-v18j.apk -o decoded
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
 
+          manifest = Path('decoded/AndroidManifest.xml')
+          text = manifest.read_text(encoding='utf-8')
+          if 'package="com.winlator.trcompat"' not in text:
+              raise SystemExit('unexpected package')
+          m = re.search(r'<application\b[^>]*>', text)
+          if not m:
+              raise SystemExit('application tag not found')
+          tag = m.group(0)
+          if 'android:debuggable=' in tag:
+              tag2 = re.sub(r'android:debuggable="[^"]*"', 'android:debuggable="true"', tag)
+          else:
+              tag2 = tag[:-1] + ' android:debuggable="true">'
+          text = text[:m.start()] + tag2 + text[m.end():]
+          manifest.write_text(text, encoding='utf-8')
+          PY
+          grep -F 'android:debuggable="true"' decoded/AndroidManifest.xml
+          java -jar apktool.jar b decoded -o manifest-source.apk
+          unzip -p manifest-source.apk AndroidManifest.xml > compiled-AndroidManifest.xml
+          test -s compiled-AndroidManifest.xml
+
+      - name: Inject only compiled manifest into pinned v18J
+        run: |
+          set -euo pipefail
+          cp base-v18j.apk unsigned-bridge.apk
+          # Remove stale v1 signatures; the final APK is re-signed below with
+          # the already-proven matching historical key.
+          zip -q -d unsigned-bridge.apk 'META-INF/*' || true
+          mkdir manifest-inject
+          cp compiled-AndroidManifest.xml manifest-inject/AndroidManifest.xml
+          (cd manifest-inject && zip -q -f ../unsigned-bridge.apk AndroidManifest.xml)
+
+          # Fail closed unless the ZIP payload is exactly the pinned v18J
+          # except for AndroidManifest.xml and old signature files.
           python3 - <<'PY'
           import hashlib
           import zipfile
 
-          def payload_names(z):
+          def payload(z):
               return {
                   n for n in z.namelist()
                   if n != 'AndroidManifest.xml' and not n.startswith('META-INF/')
               }
 
-          with zipfile.ZipFile('base-v18j.apk') as base, zipfile.ZipFile('unsigned.apk') as new:
-              base_names = payload_names(base)
-              new_names = payload_names(new)
-              if base_names != new_names:
-                  missing = sorted(base_names - new_names)[:20]
-                  added = sorted(new_names - base_names)[:20]
-                  raise SystemExit(f'payload member set changed: missing={missing} added={added}')
-              for name in sorted(base_names):
+          with zipfile.ZipFile('base-v18j.apk') as base, zipfile.ZipFile('unsigned-bridge.apk') as new:
+              a = payload(base)
+              b = payload(new)
+              if a != b:
+                  raise SystemExit(f'payload member set changed: missing={sorted(a-b)[:20]} added={sorted(b-a)[:20]}')
+              for name in sorted(a):
                   if hashlib.sha256(base.read(name)).digest() != hashlib.sha256(new.read(name)).digest():
                       raise SystemExit(f'payload changed outside manifest: {name}')
-          print('all non-manifest, non-signature APK members are byte-identical')
+          print('non-manifest payload is byte-identical to pinned v18J')
           PY
 
-          "$ANDROID_HOME/build-tools/34.0.0/zipalign" -f -p 4 unsigned.apk aligned.apk
+          "$ANDROID_HOME/build-tools/34.0.0/zipalign" -f -p 4 unsigned-bridge.apk aligned.apk
           mkdir -p out
           "$ANDROID_HOME/build-tools/34.0.0/apksigner" sign \
             --ks "$HOME/.android/debug.keystore" \
@@ -172,13 +170,24 @@ jobs:
             --key-pass pass:android \
             --out out/Winlator_11.1_TR_Compat_v18J_DEBUGGABLE_TRACE_BRIDGE.apk \
             aligned.apk
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs out/Winlator_11.1_TR_Compat_v18J_DEBUGGABLE_TRACE_BRIDGE.apk | tee new-signer.txt
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs \
+            out/Winlator_11.1_TR_Compat_v18J_DEBUGGABLE_TRACE_BRIDGE.apk | tee new-signer.txt
           grep '^Signer #1 certificate SHA-256 digest:' new-signer.txt > new-cert.txt
           diff -u base-cert.txt new-cert.txt
-          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging out/Winlator_11.1_TR_Compat_v18J_DEBUGGABLE_TRACE_BRIDGE.apk | tee badging.txt
+
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging \
+            out/Winlator_11.1_TR_Compat_v18J_DEBUGGABLE_TRACE_BRIDGE.apk | tee badging.txt
           grep -F "package: name='com.winlator.trcompat'" badging.txt
-          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump xmltree out/Winlator_11.1_TR_Compat_v18J_DEBUGGABLE_TRACE_BRIDGE.apk AndroidManifest.xml | tee manifest-tree.txt
-          grep -F 'android:debuggable' manifest-tree.txt
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump xmltree \
+            out/Winlator_11.1_TR_Compat_v18J_DEBUGGABLE_TRACE_BRIDGE.apk AndroidManifest.xml \
+            | tee new-manifest-tree.txt
+          grep -F 'android:debuggable' new-manifest-tree.txt
+
+          # Semantic guard: after removing the one intended debuggable line,
+          # aapt's manifest tree must match the pinned v18J exactly.
+          grep -v 'android:debuggable' base-manifest-tree.txt > base-manifest-normalized.txt
+          grep -v 'android:debuggable' new-manifest-tree.txt > new-manifest-normalized.txt
+          diff -u base-manifest-normalized.txt new-manifest-normalized.txt
           sha256sum out/*.apk | tee out/SHA256SUMS.txt
 
       - name: Upload recovered debuggable APK
@@ -190,6 +199,7 @@ jobs:
             base-signer.txt
             new-signer.txt
             badging.txt
-            manifest-tree.txt
+            base-manifest-tree.txt
+            new-manifest-tree.txt
           if-no-files-found: error
           retention-days: 30
