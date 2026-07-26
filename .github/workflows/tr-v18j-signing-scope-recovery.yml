@@ -99,7 +99,7 @@ jobs:
         id: decode
         run: |
           set +e
-          java -jar apktool.jar d -f -r -s --force-manifest base-v18j.apk -o decoded > decode.log 2>&1
+          java -jar apktool.jar d -f -r -s base-v18j.apk -o decoded > decode.log 2>&1
           rc=$?
           echo "APKTOOL_DECODE_RC=$rc" | tee decode-status.txt
           if [ -d decoded ]; then
