@@ -20,17 +20,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install APK rebuild tools
+      - name: Install APK rebuild prerequisites
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y apktool curl unzip zip file
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y curl unzip zip file
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Install pinned Apktool 2.12.1
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            https://github.com/iBotPeaches/Apktool/releases/download/v2.12.1/apktool_2.12.1.jar \
+            -o apktool.jar
+          echo '66cf4524a4a45a7f56567d08b2c9b6ec237bcdd78cee69fd4a59c8a0243aeafa  apktool.jar' | sha256sum -c -
+          java -jar apktool.jar --version
 
       - name: Install Android signing tools
         run: |
@@ -86,13 +95,17 @@ jobs:
           grep '^Signer #1 certificate SHA-256 digest:' resigned-signer.txt > recovered-cert.txt
           diff -u base-cert.txt recovered-cert.txt
 
-      - name: Decode and enable run-as only
+      - name: Decode manifest only and enable run-as
         run: |
           set -euo pipefail
-          apktool d -f base-v18j.apk -o decoded
+          # Keep compiled resources and DEX payloads raw.  The previous full
+          # decode/rebuild unnecessarily round-tripped the entire 200+ MB APK
+          # through the runner's distro Apktool and failed in the rebuild step.
+          java -jar apktool.jar d -f -r -s --force-manifest base-v18j.apk -o decoded
           python3 - <<'PY'
           from pathlib import Path
           import re
+
           manifest = Path('decoded/AndroidManifest.xml')
           text = manifest.read_text(encoding='utf-8')
           if 'package="com.winlator.trcompat"' not in text:
@@ -110,10 +123,38 @@ jobs:
           PY
           grep -F 'android:debuggable="true"' decoded/AndroidManifest.xml
 
-      - name: Build and sign debuggable v18J
+      - name: Build minimal-change debuggable v18J
         run: |
           set -euo pipefail
-          apktool b decoded -o unsigned.apk
+          java -jar apktool.jar b decoded -o unsigned.apk
+
+          # The bridge is allowed to change the manifest and APK signatures only.
+          # Prove that every other ZIP member is byte-identical to the pinned v18J.
+          python3 - <<'PY'
+          import hashlib
+          import zipfile
+
+          def payload_names(z):
+              return {
+                  n for n in z.namelist()
+                  if n != 'AndroidManifest.xml' and not n.startswith('META-INF/')
+              }
+
+          with zipfile.ZipFile('base-v18j.apk') as base, zipfile.ZipFile('unsigned.apk') as new:
+              base_names = payload_names(base)
+              new_names = payload_names(new)
+              if base_names != new_names:
+                  missing = sorted(base_names - new_names)[:20]
+                  added = sorted(new_names - base_names)[:20]
+                  raise SystemExit(f'payload member set changed: missing={missing} added={added}')
+              for name in sorted(base_names):
+                  a = hashlib.sha256(base.read(name)).digest()
+                  b = hashlib.sha256(new.read(name)).digest()
+                  if a != b:
+                      raise SystemExit(f'payload changed outside manifest: {name}')
+          print('all non-manifest, non-signature APK members are byte-identical')
+          PY
+
           "$ANDROID_HOME/build-tools/34.0.0/zipalign" -f -p 4 unsigned.apk aligned.apk
           mkdir -p out
           "$ANDROID_HOME/build-tools/34.0.0/apksigner" sign \
@@ -128,6 +169,9 @@ jobs:
           diff -u base-cert.txt new-cert.txt
           "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging out/Winlator_11.1_TR_Compat_v18J_DEBUGGABLE_TRACE_BRIDGE.apk | tee badging.txt
           grep -F "package: name='com.winlator.trcompat'" badging.txt
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump xmltree out/Winlator_11.1_TR_Compat_v18J_DEBUGGABLE_TRACE_BRIDGE.apk AndroidManifest.xml \
+            | tee manifest-tree.txt
+          grep -F 'android:debuggable' manifest-tree.txt
           sha256sum out/*.apk | tee out/SHA256SUMS.txt
 
       - name: Upload recovered debuggable APK
@@ -139,5 +183,6 @@ jobs:
             base-signer.txt
             new-signer.txt
             badging.txt
+            manifest-tree.txt
           if-no-files-found: error
           retention-days: 30
