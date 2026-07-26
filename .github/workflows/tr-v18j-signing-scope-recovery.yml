@@ -32,15 +32,6 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install pinned Apktool 2.12.1
-        run: |
-          set -euo pipefail
-          curl --fail --location --retry 3 \
-            https://github.com/iBotPeaches/Apktool/releases/download/v2.12.1/apktool_2.12.1.jar \
-            -o apktool.jar
-          echo '66cf4524a4a45a7f56567d08b2c9b6ec237bcdd78cee69fd4a59c8a0243aeafa  apktool.jar' | sha256sum -c -
-          java -jar apktool.jar --version
-
       - name: Install Android signing tools
         run: |
           set -euo pipefail
@@ -52,7 +43,7 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" 'build-tools;34.0.0'
 
-      - name: Download exact installed v18J candidate
+      - name: Download exact v18J candidate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -69,7 +60,7 @@ jobs:
           cp "$BASE_APK" base-v18j.apk
           echo '4003bcb0c863519720116d93540e161d640800692c0e002f7e8ac42434e5a215  base-v18j.apk' | sha256sum -c -
           "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs base-v18j.apk | tee base-signer.txt
-          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump xmltree base-v18j.apk AndroidManifest.xml > base-manifest-tree.txt
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump xmltree base-v18j.apk AndroidManifest.xml | tee base-manifest-tree.txt
 
       - name: Restore historical TR Compat signing key
         id: debug-key-cache
@@ -96,50 +87,131 @@ jobs:
           grep '^Signer #1 certificate SHA-256 digest:' resigned-signer.txt > recovered-cert.txt
           diff -u base-cert.txt recovered-cert.txt
 
-      - name: Compile debuggable manifest with pinned Apktool
-        id: compile-manifest
+      - name: Patch only binary AndroidManifest debuggable value
         run: |
           set -euo pipefail
-          # Decode resources + manifest so Apktool can compile a valid binary
-          # manifest. DEX remains opaque because no source change is needed.
-          java -jar apktool.jar d -f -s base-v18j.apk -o decoded
           python3 - <<'PY'
+          import struct
+          import zipfile
           from pathlib import Path
-          import re
 
-          manifest = Path('decoded/AndroidManifest.xml')
-          text = manifest.read_text(encoding='utf-8')
-          if 'package="com.winlator.trcompat"' not in text:
-              raise SystemExit('unexpected package')
-          m = re.search(r'<application\b[^>]*>', text)
-          if not m:
-              raise SystemExit('application tag not found')
-          tag = m.group(0)
-          if 'android:debuggable=' in tag:
-              tag2 = re.sub(r'android:debuggable="[^"]*"', 'android:debuggable="true"', tag)
-          else:
-              tag2 = tag[:-1] + ' android:debuggable="true">'
-          text = text[:m.start()] + tag2 + text[m.end():]
-          manifest.write_text(text, encoding='utf-8')
+          apk = Path('base-v18j.apk')
+          with zipfile.ZipFile(apk) as zf:
+              original = bytearray(zf.read('AndroidManifest.xml'))
+          data = bytearray(original)
+
+          def u16(buf, off):
+              return struct.unpack_from('<H', buf, off)[0]
+
+          def u32(buf, off):
+              return struct.unpack_from('<I', buf, off)[0]
+
+          def put_u32(buf, off, value):
+              struct.pack_into('<I', buf, off, value)
+
+          if u16(data, 0) != 0x0003:
+              raise SystemExit('unexpected binary XML root type')
+
+          strings = None
+          pos = u16(data, 2)
+          debug_data_offset = None
+          original_debug_value = None
+
+          while pos < len(data):
+              chunk_type = u16(data, pos)
+              header_size = u16(data, pos + 2)
+              chunk_size = u32(data, pos + 4)
+              if chunk_size < header_size or pos + chunk_size > len(data):
+                  raise SystemExit(f'invalid AXML chunk at {pos}')
+
+              if chunk_type == 0x0001:  # RES_STRING_POOL_TYPE
+                  count = u32(data, pos + 8)
+                  flags = u32(data, pos + 16)
+                  strings_start = u32(data, pos + 20)
+                  utf8 = bool(flags & 0x100)
+                  offsets = [u32(data, pos + header_size + i * 4) for i in range(count)]
+                  base = pos + strings_start
+
+                  def read_len8(p):
+                      v = data[p]
+                      if v & 0x80:
+                          return ((v & 0x7f) << 8) | data[p + 1], 2
+                      return v, 1
+
+                  def read_len16(p):
+                      v = u16(data, p)
+                      if v & 0x8000:
+                          return ((v & 0x7fff) << 16) | u16(data, p + 2), 4
+                      return v, 2
+
+                  strings = []
+                  for rel in offsets:
+                      p = base + rel
+                      if utf8:
+                          _, n = read_len8(p)
+                          p += n
+                          byte_len, n = read_len8(p)
+                          p += n
+                          strings.append(bytes(data[p:p + byte_len]).decode('utf-8'))
+                      else:
+                          char_len, n = read_len16(p)
+                          p += n
+                          strings.append(bytes(data[p:p + char_len * 2]).decode('utf-16le'))
+
+              elif chunk_type == 0x0102:  # RES_XML_START_ELEMENT_TYPE
+                  if strings is None:
+                      raise SystemExit('start element before string pool')
+                  name_idx = u32(data, pos + 20)
+                  element_name = strings[name_idx]
+                  attr_start = u16(data, pos + 24)
+                  attr_size = u16(data, pos + 26)
+                  attr_count = u16(data, pos + 28)
+                  attr_base = pos + 16 + attr_start
+                  if element_name == 'application':
+                      for i in range(attr_count):
+                          a = attr_base + i * attr_size
+                          attr_name_idx = u32(data, a + 4)
+                          attr_name = strings[attr_name_idx]
+                          if attr_name == 'debuggable':
+                              if debug_data_offset is not None:
+                                  raise SystemExit('multiple application debuggable attributes')
+                              data_type = data[a + 15]
+                              if data_type != 0x12:  # TYPE_INT_BOOLEAN
+                                  raise SystemExit(f'debuggable has unexpected type 0x{data_type:02x}')
+                              debug_data_offset = a + 16
+                              original_debug_value = u32(data, debug_data_offset)
+
+              pos += chunk_size
+
+          if debug_data_offset is None:
+              raise SystemExit('application android:debuggable attribute is absent; refuse non-minimal manifest rewrite')
+
+          put_u32(data, debug_data_offset, 0xffffffff)
+          changed = [i for i, (a, b) in enumerate(zip(original, data)) if a != b]
+          allowed = set(range(debug_data_offset, debug_data_offset + 4))
+          if any(i not in allowed for i in changed):
+              raise SystemExit(f'unexpected manifest byte changes: {changed[:20]}')
+
+          Path('compiled-AndroidManifest.xml').write_bytes(data)
+          Path('manifest-patch-report.txt').write_text(
+              f'debuggable_data_offset={debug_data_offset}\n'
+              f'original_debuggable_data=0x{original_debug_value:08x}\n'
+              f'new_debuggable_data=0xffffffff\n'
+              f'changed_byte_count={len(changed)}\n',
+              encoding='utf-8',
+          )
+          print(Path('manifest-patch-report.txt').read_text(), end='')
           PY
-          grep -F 'android:debuggable="true"' decoded/AndroidManifest.xml
-          java -jar apktool.jar b decoded -o manifest-source.apk
-          unzip -p manifest-source.apk AndroidManifest.xml > compiled-AndroidManifest.xml
-          test -s compiled-AndroidManifest.xml
 
-      - name: Inject only compiled manifest into pinned v18J
+      - name: Inject manifest and prove all other APK bytes preserved
         run: |
           set -euo pipefail
           cp base-v18j.apk unsigned-bridge.apk
-          # Remove stale v1 signatures; the final APK is re-signed below with
-          # the already-proven matching historical key.
           zip -q -d unsigned-bridge.apk 'META-INF/*' || true
           mkdir manifest-inject
           cp compiled-AndroidManifest.xml manifest-inject/AndroidManifest.xml
           (cd manifest-inject && zip -q -f ../unsigned-bridge.apk AndroidManifest.xml)
 
-          # Fail closed unless the ZIP payload is exactly the pinned v18J
-          # except for AndroidManifest.xml and old signature files.
           python3 - <<'PY'
           import hashlib
           import zipfile
@@ -161,6 +233,9 @@ jobs:
           print('non-manifest payload is byte-identical to pinned v18J')
           PY
 
+      - name: Align sign and validate bridge APK
+        run: |
+          set -euo pipefail
           "$ANDROID_HOME/build-tools/34.0.0/zipalign" -f -p 4 unsigned-bridge.apk aligned.apk
           mkdir -p out
           "$ANDROID_HOME/build-tools/34.0.0/apksigner" sign \
@@ -183,11 +258,26 @@ jobs:
             | tee new-manifest-tree.txt
           grep -F 'android:debuggable' new-manifest-tree.txt
 
-          # Semantic guard: after removing the one intended debuggable line,
-          # aapt's manifest tree must match the pinned v18J exactly.
-          grep -v 'android:debuggable' base-manifest-tree.txt > base-manifest-normalized.txt
-          grep -v 'android:debuggable' new-manifest-tree.txt > new-manifest-normalized.txt
-          diff -u base-manifest-normalized.txt new-manifest-normalized.txt
+          python3 - <<'PY'
+          import zipfile
+          from pathlib import Path
+
+          with zipfile.ZipFile('base-v18j.apk') as a, zipfile.ZipFile('out/Winlator_11.1_TR_Compat_v18J_DEBUGGABLE_TRACE_BRIDGE.apk') as b:
+              old = a.read('AndroidManifest.xml')
+              new = b.read('AndroidManifest.xml')
+          report = {}
+          for line in Path('manifest-patch-report.txt').read_text().splitlines():
+              k, v = line.split('=', 1)
+              report[k] = v
+          off = int(report['debuggable_data_offset'])
+          if len(old) != len(new):
+              raise SystemExit('manifest length changed')
+          for i, (x, y) in enumerate(zip(old, new)):
+              if x != y and not (off <= i < off + 4):
+                  raise SystemExit(f'final manifest changed outside debuggable value at byte {i}')
+          print('final manifest differs only at android:debuggable typed-value bytes')
+          PY
+
           sha256sum out/*.apk | tee out/SHA256SUMS.txt
 
       - name: Upload recovered debuggable APK
@@ -201,5 +291,6 @@ jobs:
             badging.txt
             base-manifest-tree.txt
             new-manifest-tree.txt
+            manifest-patch-report.txt
           if-no-files-found: error
           retention-days: 30
