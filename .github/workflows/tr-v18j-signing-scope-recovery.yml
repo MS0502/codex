@@ -95,41 +95,25 @@ jobs:
           grep '^Signer #1 certificate SHA-256 digest:' resigned-signer.txt > recovered-cert.txt
           diff -u base-cert.txt recovered-cert.txt
 
-      - name: Decode manifest only and enable run-as
+      - name: Decode only what the bridge needs
         run: |
           set -euo pipefail
-          # Keep compiled resources and DEX payloads raw.  The previous full
-          # decode/rebuild unnecessarily round-tripped the entire 200+ MB APK
-          # through the runner's distro Apktool and failed in the rebuild step.
+          # Keep compiled resources and DEX payloads raw.  We only need a
+          # rebuildable manifest; Apktool's -d/--debug build flag will set
+          # android:debuggable without hand-editing application resources.
           java -jar apktool.jar d -f -r -s --force-manifest base-v18j.apk -o decoded
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          manifest = Path('decoded/AndroidManifest.xml')
-          text = manifest.read_text(encoding='utf-8')
-          if 'package="com.winlator.trcompat"' not in text:
-              raise SystemExit('unexpected package')
-          m = re.search(r'<application\b[^>]*>', text)
-          if not m:
-              raise SystemExit('application tag not found')
-          tag = m.group(0)
-          if 'android:debuggable=' in tag:
-              tag2 = re.sub(r'android:debuggable="[^"]*"', 'android:debuggable="true"', tag)
-          else:
-              tag2 = tag[:-1] + ' android:debuggable="true">'
-          text = text[:m.start()] + tag2 + text[m.end():]
-          manifest.write_text(text, encoding='utf-8')
-          PY
-          grep -F 'android:debuggable="true"' decoded/AndroidManifest.xml
+          test -s decoded/AndroidManifest.xml
+          test -s decoded/resources.arsc
+          find decoded -maxdepth 1 -type f -name 'classes*.dex' -print -quit | grep -q .
 
       - name: Build minimal-change debuggable v18J
         run: |
           set -euo pipefail
-          java -jar apktool.jar b decoded -o unsigned.apk
+          # Apktool 2.x: -d/--debug adds android:debuggable="true".
+          java -jar apktool.jar b -d decoded -o unsigned.apk
 
-          # The bridge is allowed to change the manifest and APK signatures only.
-          # Prove that every other ZIP member is byte-identical to the pinned v18J.
+          # The bridge is allowed to change the manifest and signatures only.
+          # Prove that every other APK member remains byte-identical.
           python3 - <<'PY'
           import hashlib
           import zipfile
@@ -148,9 +132,7 @@ jobs:
                   added = sorted(new_names - base_names)[:20]
                   raise SystemExit(f'payload member set changed: missing={missing} added={added}')
               for name in sorted(base_names):
-                  a = hashlib.sha256(base.read(name)).digest()
-                  b = hashlib.sha256(new.read(name)).digest()
-                  if a != b:
+                  if hashlib.sha256(base.read(name)).digest() != hashlib.sha256(new.read(name)).digest():
                       raise SystemExit(f'payload changed outside manifest: {name}')
           print('all non-manifest, non-signature APK members are byte-identical')
           PY
@@ -169,8 +151,7 @@ jobs:
           diff -u base-cert.txt new-cert.txt
           "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging out/Winlator_11.1_TR_Compat_v18J_DEBUGGABLE_TRACE_BRIDGE.apk | tee badging.txt
           grep -F "package: name='com.winlator.trcompat'" badging.txt
-          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump xmltree out/Winlator_11.1_TR_Compat_v18J_DEBUGGABLE_TRACE_BRIDGE.apk AndroidManifest.xml \
-            | tee manifest-tree.txt
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump xmltree out/Winlator_11.1_TR_Compat_v18J_DEBUGGABLE_TRACE_BRIDGE.apk AndroidManifest.xml | tee manifest-tree.txt
           grep -F 'android:debuggable' manifest-tree.txt
           sha256sum out/*.apk | tee out/SHA256SUMS.txt
 
