@@ -83,6 +83,13 @@ jobs:
           set -euo pipefail
           ROOT="$GITHUB_WORKSPACE/probe/rootfs"
           REAL="$GITHUB_WORKSPACE/probe/box64-v040"
+          export HOME="$ROOT/home/xuser"
+          export USER=xuser
+          export TMPDIR="$ROOT/tmp"
+          export PATH="$ROOT/opt/wine/bin:$ROOT/usr/local/bin:$ROOT/usr/bin:/usr/bin:/bin"
+          export LD_LIBRARY_PATH="$ROOT/lib/aarch64-linux-gnu:$ROOT/usr/lib/aarch64-linux-gnu:$ROOT/lib:$ROOT/usr/lib"
+          export BOX64_LD_LIBRARY_PATH="$ROOT/lib/x86_64-linux-gnu:$ROOT/usr/lib/x86_64-linux-gnu"
+          export BOX64_NOBANNER=0 BOX64_DYNAREC=1 BOX64_LOG=1
           WRAP="$RUNNER_TEMP/box64-wrapper"
           MARK="$RUNNER_TEMP/box64-wrapper-entered.txt"
           cat > "$WRAP" <<EOF
@@ -91,9 +98,14 @@ jobs:
           exec "$REAL" "\$@"
           EOF
           chmod 755 "$WRAP"
+          set +e
           "$WRAP" "$ROOT/opt/wine/bin/wine" --version 2>&1 | tee probe/wrapper-smoke.txt
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "wrapper_rc=$rc" | tee -a probe/wrapper-smoke.txt
           test -s "$MARK"
           cat "$MARK" | tee probe/wrapper-marker.txt
+          test "$rc" -eq 0
 
       - name: Build upstream Box64 v0.4.2 on native ARM64
         run: |
@@ -147,9 +159,10 @@ jobs:
           exit 0
 
       - name: Upload ARM64 probe
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: TR_ARM64_RUNTIME_AB_PROBE
           path: probe/
           retention-days: 30
-          if-no-files-found: error
+          if-no-files-found: warn
