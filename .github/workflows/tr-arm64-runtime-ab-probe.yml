@@ -118,7 +118,7 @@ jobs:
 
       - name: A-B Wine version smoke with Box64 v0.4.2
         run: |
-          set -euo pipefail
+          set +e
           ROOT="$GITHUB_WORKSPACE/probe/rootfs"
           BOX="$GITHUB_WORKSPACE/probe/box64-build/box64"
           export HOME="$ROOT/home/xuser"
@@ -128,8 +128,12 @@ jobs:
           export LD_LIBRARY_PATH="$ROOT/lib/aarch64-linux-gnu:$ROOT/usr/lib/aarch64-linux-gnu:$ROOT/lib:$ROOT/usr/lib"
           export BOX64_LD_LIBRARY_PATH="$ROOT/lib/x86_64-linux-gnu:$ROOT/usr/lib/x86_64-linux-gnu"
           export BOX64_NOBANNER=0 BOX64_DYNAREC=1 BOX64_LOG=1
-          "$BOX" "$ROOT/opt/wine/bin/wine" --version 2>&1 | tee probe/v042-wine-smoke.txt
-          "$BOX" "$ROOT/opt/wine/bin/wineserver" --version 2>&1 | tee -a probe/v042-wine-smoke.txt
+          "$BOX" "$ROOT/opt/wine/bin/wine" --version >probe/v042-wine-smoke.txt 2>&1
+          wine_rc=$?
+          "$BOX" "$ROOT/opt/wine/bin/wineserver" --version >>probe/v042-wine-smoke.txt 2>&1
+          server_rc=$?
+          echo "wine_rc=$wine_rc wineserver_rc=$server_rc" | tee -a probe/v042-wine-smoke.txt
+          exit 0
 
       - name: Headless Wine startup comparison
         run: |
@@ -156,13 +160,24 @@ jobs:
             echo "cmd_rc=$?" | tee -a "probe/$name-wineboot.txt"
             "$box" "$ROOT/opt/wine/bin/wineserver" -k >/dev/null 2>&1 || true
           done
+          cp /tmp/xvfb.log probe/xvfb.log || true
           exit 0
 
-      - name: Upload ARM64 probe
+      - name: Upload ARM64 probe logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: TR_ARM64_RUNTIME_AB_PROBE
-          path: probe/
+          name: TR_ARM64_RUNTIME_AB_PROBE_LOGS
+          path: |
+            probe/file-report.txt
+            probe/box64-v040-phdr.txt
+            probe/v040-version-smoke.txt
+            probe/wrapper-smoke.txt
+            probe/wrapper-marker.txt
+            probe/v042-box64-version.txt
+            probe/v042-wine-smoke.txt
+            probe/v040-wineboot.txt
+            probe/v042-wineboot.txt
+            probe/xvfb.log
           retention-days: 30
           if-no-files-found: warn
