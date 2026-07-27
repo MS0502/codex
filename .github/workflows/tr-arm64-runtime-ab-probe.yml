@@ -1,0 +1,155 @@
+name: TR native ARM64 Box64/Wine A-B probe
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-native-wrapper-closure-v18j]
+    paths: [.github/workflows/tr-arm64-runtime-ab-probe.yml]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  arm64-runtime-probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install probe tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            unzip zstd patchelf file cmake ninja-build build-essential git xvfb
+
+      - name: Fetch exact validated v16 APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p probe/v16
+          gh api /repos/MS0502/codex/actions/artifacts/8394185282/zip > probe/v16-artifact.zip
+          unzip -q probe/v16-artifact.zip -d probe/v16
+          APK=probe/v16/Winlator_11.1_TR_Compat_v16_LIFETIME.apk
+          test -s "$APK"
+          echo '5d149a03d840f56d4a4c42d1713d0233a755980eaad980c9d07c8dfdb8cace93  '"$APK" | sha256sum -c -
+          unzip -p "$APK" assets/rootfs.tzst > probe/rootfs.tzst
+          unzip -p "$APK" lib/arm64-v8a/libtr_box64_exec.so > probe/box64-v040
+          chmod 755 probe/box64-v040
+          echo '2c6f9846e327dba80a210572d16b1811f6dd041c850e48b2d02b34677e09c421  probe/box64-v040' | sha256sum -c -
+          mkdir -p probe/rootfs
+          tar --use-compress-program=unzstd -xf probe/rootfs.tzst -C probe/rootfs
+          file probe/box64-v040 probe/rootfs/opt/wine/bin/wine probe/rootfs/opt/wine/bin/wineserver | tee probe/file-report.txt
+          readelf -lW probe/box64-v040 | tee probe/box64-v040-phdr.txt
+
+      - name: Recreate Winlator absolute roots
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/probe/rootfs"
+          sudo mkdir -p /data/data/com.winlator.trcompat/files /data/user/0/com.winlator.trcompat
+          sudo rm -rf /data/data/com.winlator.trcompat/files/rootfs /data/user/0/com.winlator.trcompat/r
+          sudo ln -s "$ROOT" /data/data/com.winlator.trcompat/files/rootfs
+          sudo ln -s "$ROOT" /data/user/0/com.winlator.trcompat/r
+          test -x /data/data/com.winlator.trcompat/files/rootfs/lib/ld-linux-aarch64.so.1
+
+      - name: Run embedded Box64 0.4.0 and Wine 10.10 natively on ARM64
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/probe/rootfs"
+          BOX="$GITHUB_WORKSPACE/probe/box64-v040"
+          export HOME="$ROOT/home/xuser"
+          export USER=xuser
+          export TMPDIR="$ROOT/tmp"
+          export PATH="$ROOT/opt/wine/bin:$ROOT/usr/local/bin:$ROOT/usr/bin:/usr/bin:/bin"
+          export LD_LIBRARY_PATH="$ROOT/lib/aarch64-linux-gnu:$ROOT/usr/lib/aarch64-linux-gnu:$ROOT/lib:$ROOT/usr/lib"
+          export BOX64_LD_LIBRARY_PATH="$ROOT/lib/x86_64-linux-gnu:$ROOT/usr/lib/x86_64-linux-gnu"
+          export BOX64_NOBANNER=0 BOX64_DYNAREC=1 BOX64_LOG=1
+          mkdir -p "$HOME" "$TMPDIR"
+          {
+            echo '=== runner ==='
+            uname -a
+            getconf PAGESIZE
+            echo '=== embedded box64 ==='
+            "$BOX" --version
+            echo '=== v16 wine ==='
+            "$BOX" "$ROOT/opt/wine/bin/wine" --version
+            "$BOX" "$ROOT/opt/wine/bin/wineserver" --version
+          } 2>&1 | tee probe/v040-version-smoke.txt
+
+      - name: Prove direct shell-wrapper launch semantics on ARM64
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/probe/rootfs"
+          REAL="$GITHUB_WORKSPACE/probe/box64-v040"
+          WRAP="$RUNNER_TEMP/box64-wrapper"
+          MARK="$RUNNER_TEMP/box64-wrapper-entered.txt"
+          cat > "$WRAP" <<EOF
+          #!/bin/sh
+          printf 'wrapper-entered pid=%s argv0=%s\n' "\$\$" "\$0" > "$MARK"
+          exec "$REAL" "\$@"
+          EOF
+          chmod 755 "$WRAP"
+          "$WRAP" "$ROOT/opt/wine/bin/wine" --version 2>&1 | tee probe/wrapper-smoke.txt
+          test -s "$MARK"
+          cat "$MARK" | tee probe/wrapper-marker.txt
+
+      - name: Build upstream Box64 v0.4.2 on native ARM64
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v0.4.2 https://github.com/ptitSeb/box64.git probe/box64-src
+          cmake -S probe/box64-src -B probe/box64-build -G Ninja \
+            -DARM_DYNAREC=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build probe/box64-build --parallel 4
+          probe/box64-build/box64 --version 2>&1 | tee probe/v042-box64-version.txt
+
+      - name: A-B Wine version smoke with Box64 v0.4.2
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/probe/rootfs"
+          BOX="$GITHUB_WORKSPACE/probe/box64-build/box64"
+          export HOME="$ROOT/home/xuser"
+          export USER=xuser
+          export TMPDIR="$ROOT/tmp"
+          export PATH="$ROOT/opt/wine/bin:$ROOT/usr/local/bin:$ROOT/usr/bin:/usr/bin:/bin"
+          export LD_LIBRARY_PATH="$ROOT/lib/aarch64-linux-gnu:$ROOT/usr/lib/aarch64-linux-gnu:$ROOT/lib:$ROOT/usr/lib"
+          export BOX64_LD_LIBRARY_PATH="$ROOT/lib/x86_64-linux-gnu:$ROOT/usr/lib/x86_64-linux-gnu"
+          export BOX64_NOBANNER=0 BOX64_DYNAREC=1 BOX64_LOG=1
+          "$BOX" "$ROOT/opt/wine/bin/wine" --version 2>&1 | tee probe/v042-wine-smoke.txt
+          "$BOX" "$ROOT/opt/wine/bin/wineserver" --version 2>&1 | tee -a probe/v042-wine-smoke.txt
+
+      - name: Headless Wine startup comparison
+        run: |
+          set +e
+          ROOT="$GITHUB_WORKSPACE/probe/rootfs"
+          export HOME="$ROOT/home/xuser" USER=xuser TMPDIR="$ROOT/tmp"
+          export PATH="$ROOT/opt/wine/bin:$ROOT/usr/local/bin:$ROOT/usr/bin:/usr/bin:/bin"
+          export LD_LIBRARY_PATH="$ROOT/lib/aarch64-linux-gnu:$ROOT/usr/lib/aarch64-linux-gnu:$ROOT/lib:$ROOT/usr/lib"
+          export BOX64_LD_LIBRARY_PATH="$ROOT/lib/x86_64-linux-gnu:$ROOT/usr/lib/x86_64-linux-gnu"
+          export BOX64_NOBANNER=1 BOX64_DYNAREC=1
+          Xvfb :99 -screen 0 1280x720x24 >/tmp/xvfb.log 2>&1 &
+          export DISPLAY=:99
+          sleep 1
+          for pair in "v040:$GITHUB_WORKSPACE/probe/box64-v040" "v042:$GITHUB_WORKSPACE/probe/box64-build/box64"; do
+            name="${pair%%:*}"; box="${pair#*:}"
+            prefix="$RUNNER_TEMP/prefix-$name"
+            rm -rf "$prefix"
+            export WINEPREFIX="$prefix"
+            echo "=== $name wineboot ===" | tee "probe/$name-wineboot.txt"
+            timeout 35s "$box" "$ROOT/opt/wine/bin/wineboot" -u >>"probe/$name-wineboot.txt" 2>&1
+            rc=$?
+            echo "wineboot_rc=$rc" | tee -a "probe/$name-wineboot.txt"
+            timeout 15s "$box" "$ROOT/opt/wine/bin/wine" cmd /c ver >>"probe/$name-wineboot.txt" 2>&1
+            echo "cmd_rc=$?" | tee -a "probe/$name-wineboot.txt"
+            "$box" "$ROOT/opt/wine/bin/wineserver" -k >/dev/null 2>&1 || true
+          done
+          exit 0
+
+      - name: Upload ARM64 probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: TR_ARM64_RUNTIME_AB_PROBE
+          path: probe/
+          retention-days: 30
+          if-no-files-found: error
