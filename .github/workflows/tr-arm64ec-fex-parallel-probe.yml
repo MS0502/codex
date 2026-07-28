@@ -64,11 +64,17 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Attempt clean reference APK build
+        id: build
+        continue-on-error: true
         working-directory: bannerlator
         run: |
-          set -o pipefail
+          set +e
           chmod +x gradlew
-          ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee ../bannerlator-build.log
+          ./gradlew --no-daemon --stacktrace assembleDebug > ../bannerlator-build.log 2>&1
+          rc=$?
+          echo "$rc" > ../bannerlator-build-rc.txt
+          tail -n 250 ../bannerlator-build.log
+          exit "$rc"
       - name: Inspect produced APKs
         if: always()
         run: |
@@ -86,7 +92,13 @@ jobs:
           name: TR_ARM64EC_FEX_BUILD_EVIDENCE
           path: |
             bannerlator-build.log
+            bannerlator-build-rc.txt
             bannerlator-apks.txt
             bannerlator-apk-inspection.txt
           if-no-files-found: warn
           retention-days: 30
+      - name: Enforce build result after evidence upload
+        if: always()
+        run: |
+          rc=$(cat bannerlator-build-rc.txt 2>/dev/null || echo 99)
+          test "$rc" -eq 0
