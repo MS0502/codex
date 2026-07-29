@@ -1,0 +1,42 @@
+name: Patch TR Wine 11.14 native prefix
+
+on:
+  push:
+    branches: [tr-wine-11-14-talesrunner-v20]
+    paths:
+      - .github/workflows/tr-wine-11-14-v20-prefix-selfpatch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-prefix-and-rebuild:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tr-wine-11-14-talesrunner-v20
+          fetch-depth: 0
+
+      - name: Move native Wine test prefix off the bind mount
+        run: |
+          set -euo pipefail
+          target=.github/workflows/tr-wine-11-14-v20.yml
+          grep -F 'rm -rf /work/wine-build /work/wine-stage /work/native-prefix' "$target"
+          grep -F 'export WINEPREFIX=/work/native-prefix' "$target"
+          sed -i \
+            -e 's#rm -rf /work/wine-build /work/wine-stage /work/native-prefix#rm -rf /work/wine-build /work/wine-stage /tmp/native-prefix#' \
+            -e 's#export WINEPREFIX=/work/native-prefix#export WINEPREFIX=/tmp/native-prefix#' \
+            "$target"
+          grep -F 'rm -rf /work/wine-build /work/wine-stage /tmp/native-prefix' "$target"
+          grep -F 'export WINEPREFIX=/tmp/native-prefix' "$target"
+          git diff --check
+
+      - name: Commit exact CI harness fix
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/workflows/tr-wine-11-14-v20.yml
+          git commit -m 'ci: use owned tmp prefix for native Wine gate'
+          git push origin HEAD:tr-wine-11-14-talesrunner-v20
