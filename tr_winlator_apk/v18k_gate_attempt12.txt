@@ -1,0 +1,1 @@
+Attempt 12: retry the compiled ARM64 Xvfb gate after retaining shape.c and removing only SHAPE extension registration. No APK or game runtime is changed.

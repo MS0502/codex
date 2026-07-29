@@ -1,0 +1,144 @@
+name: TR v18K ARM64 Explorer baseline v3
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-xshape-restore-v18k]
+    paths: [.github/workflows/tr-v18k-arm64-runtime-smoke-v3.yml]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  arm64-explorer-baseline:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    env:
+      V18J_ARTIFACT_ID: '8442434345'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          test "$(dpkg --print-architecture)" = arm64
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            curl unzip zstd file binutils xvfb x11-utils imagemagick procps
+
+      - name: Download and extract exact v18J runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V18J_ARTIFACT_ID}/zip" \
+            -o artifact.zip
+          unzip -q artifact.zip -d artifact
+          APK="$(find artifact -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          sha256sum "$APK" | tee apk-sha256.txt
+          grep -F '4003bcb0c863519720116d93540e161d640800692c0e002f7e8ac42434e5a215' apk-sha256.txt
+
+          mkdir -p apk rootfs box64 prefix evidence
+          unzip -q "$APK" assets/rootfs.tzst assets/container_pattern.tzst \
+            assets/box64/box64-0.4.0.tzst -d apk
+          tar --use-compress-program=unzstd -xf apk/assets/rootfs.tzst -C rootfs
+          tar --use-compress-program=unzstd -xf apk/assets/box64/box64-0.4.0.tzst -C box64
+          tar --use-compress-program=unzstd -xf apk/assets/container_pattern.tzst -C prefix
+
+          sudo install -D -m 0755 box64/usr/local/bin/box64 rootfs/usr/local/bin/box64
+          sudo mkdir -p rootfs/home/winlator rootfs/data/data/com.winlator.trcompat/files
+          sudo cp -a prefix/.wine rootfs/home/winlator/.wine
+          sudo ln -sfn / rootfs/data/data/com.winlator.trcompat/files/rootfs
+          sudo mkdir -p rootfs/etc rootfs/var/lib/dbus rootfs/tmp rootfs/dev rootfs/proc rootfs/sys
+          printf '%s\n' 0123456789abcdef0123456789abcdef | sudo tee rootfs/etc/machine-id >/dev/null
+          sudo ln -sfn /etc/machine-id rootfs/var/lib/dbus/machine-id
+
+          file rootfs/usr/local/bin/box64 rootfs/opt/wine/bin/wine \
+            rootfs/opt/wine/bin/wineserver | tee runtime-file-types.txt
+          grep -F 'ARM aarch64' runtime-file-types.txt
+          test "$(grep -c 'x86-64' runtime-file-types.txt)" -ge 2
+
+      - name: Mount runtime and start X server
+        run: |
+          set -euo pipefail
+          sudo mount --rbind /dev rootfs/dev
+          sudo mount --make-rslave rootfs/dev
+          sudo mount -t proc proc rootfs/proc
+          sudo mount --rbind /sys rootfs/sys
+          sudo mount --make-rslave rootfs/sys
+          sudo mount --bind /tmp rootfs/tmp
+          Xvfb :99 -screen 0 1280x720x24 -nolisten tcp >evidence/xvfb.log 2>&1 &
+          echo $! > evidence/xvfb.pid
+          for _ in $(seq 1 30); do
+            xdpyinfo -display :99 >/dev/null 2>&1 && break
+            sleep 1
+          done
+          xdpyinfo -display :99 > evidence/xdpyinfo.txt
+          xdpyinfo -display :99 | grep -q SHAPE
+
+      - name: Execute exact Box64 Wine Explorer
+        run: |
+          set -euo pipefail
+          sudo env HOME=/home/winlator USER=winlator DISPLAY=:99 \
+            WINEPREFIX=/home/winlator/.wine WINEDEBUG=warn+all,err+all \
+            PATH=/opt/wine/bin:/usr/local/bin:/usr/bin:/bin \
+            BOX64_NOBANNER=0 BOX64_LOG=1 BOX64_DYNAREC=1 \
+            BOX64_PATH=/opt/wine/bin:/usr/bin:/bin \
+            BOX64_LD_LIBRARY_PATH=/opt/wine/lib:/usr/lib:/lib \
+            /usr/bin/timeout --signal=TERM 70s \
+            /usr/sbin/chroot rootfs /usr/local/bin/box64 /opt/wine/bin/wine \
+            explorer.exe /desktop=TRSmoke,1280x720 \
+            >evidence/wine.log 2>&1 &
+          PID=$!
+          echo "$PID" > evidence/runtime.pid
+
+          alive=0
+          windows=0
+          for second in 10 20 30 40 50 60; do
+            sleep 10
+            if kill -0 "$PID" 2>/dev/null; then alive=$((alive + 1)); fi
+            printf '=== %ss ===\n' "$second" >> evidence/processes.txt
+            ps -eo pid,ppid,stat,etime,comm,args \
+              | grep -E 'box64|wine|wineserver|explorer' | grep -v grep \
+              >> evidence/processes.txt || true
+            xwininfo -display :99 -root -tree > "evidence/xwininfo-${second}.txt" 2>&1 || true
+            if grep -Eqi 'TRSmoke|Wine desktop|explorer' "evidence/xwininfo-${second}.txt"; then
+              windows=$((windows + 1))
+            fi
+            import -display :99 -window root "evidence/screen-${second}.png" || true
+          done
+
+          printf 'alive_checks=%s\nwindow_checks=%s\n' "$alive" "$windows" | tee evidence/result.txt
+          grep -Ei 'c0000135|service[^\n]*126|RpcSs[^\n]*fail|segmentation fault|SIGSEGV' \
+            evidence/wine.log > evidence/fatal-markers.txt || true
+
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" || true
+          test "$alive" -ge 5
+          test "$windows" -ge 5
+          test ! -s evidence/fatal-markers.txt
+
+      - name: Cleanup mounts
+        if: always()
+        run: |
+          sudo pkill -KILL box64 2>/dev/null || true
+          sudo pkill -KILL Xvfb 2>/dev/null || true
+          sudo umount -l rootfs/tmp 2>/dev/null || true
+          sudo umount -l rootfs/proc 2>/dev/null || true
+          sudo umount -R -l rootfs/sys 2>/dev/null || true
+          sudo umount -R -l rootfs/dev 2>/dev/null || true
+
+      - name: Upload baseline evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V18J_ARM64_EXPLORER_BASELINE_V3_EVIDENCE
+          path: |
+            evidence/
+            apk-sha256.txt
+            runtime-file-types.txt
+          if-no-files-found: warn

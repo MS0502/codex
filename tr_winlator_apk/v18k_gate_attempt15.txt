@@ -1,0 +1,1 @@
+Attempt 15: validate the proven no-SHAPE Xvfb wrapper without brittle product-name matching, then run v18J baseline and XShape-restored variants. No APK or game file is changed.

@@ -1,0 +1,1 @@
+Build and publish the small verified XShape A-B hotpatch. No APK or game binary is changed.

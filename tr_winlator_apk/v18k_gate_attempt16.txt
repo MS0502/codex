@@ -1,0 +1,1 @@
+Attempt 16: compare exact Winlator startup, cmd instead of wfm, desktop-only, and exact startup with Wine debug disabled on the proven true no-SHAPE ARM64 server. No APK or game file is changed.

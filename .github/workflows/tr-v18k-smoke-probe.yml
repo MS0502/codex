@@ -1,0 +1,43 @@
+name: Report v18K ARM64 smoke result
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-xshape-restore-v18k]
+    paths: [.github/workflows/tr-v18k-smoke-probe.yml]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Wait for and report latest ARM64 smoke run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          API="repos/${GITHUB_REPOSITORY}/actions/workflows/tr-v18k-arm64-runtime-smoke.yml/runs?branch=tr-wine-compat-proton11-xshape-restore-v18k&per_page=5"
+          RUN=''
+          for attempt in $(seq 1 60); do
+            RUN="$(gh api "$API" --jq '.workflow_runs[0] // empty')"
+            if [ -n "$RUN" ]; then
+              STATUS="$(jq -r '.status' <<<"$RUN")"
+              if [ "$STATUS" = completed ]; then break; fi
+            fi
+            sleep 15
+          done
+
+          if [ -z "$RUN" ]; then
+            BODY='ARM64 smoke probe found no workflow run. The runtime gate did not start.'
+          else
+            RUN_ID="$(jq -r '.id' <<<"$RUN")"
+            JOBS="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs" --jq '[.jobs[] | {id,name,status,conclusion,steps:[.steps[] | {name,status,conclusion}]}]')"
+            ARTIFACTS="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts" --jq '[.artifacts[] | {id,name,size_in_bytes,expired}]')"
+            BODY="$(printf 'v18K ARM64 Box64/Wine Explorer smoke result\n\nRun:\n```json\n%s\n```\n\nJobs:\n```json\n%s\n```\n\nArtifacts:\n```json\n%s\n```\n' "$RUN" "$JOBS" "$ARTIFACTS")"
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/issues/19/comments" -f body="$BODY"

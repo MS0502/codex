@@ -1,0 +1,202 @@
+name: TR v18K ARM64 Box64 Wine Explorer smoke
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-xshape-restore-v18k]
+    paths: [.github/workflows/tr-v18k-arm64-runtime-smoke.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  arm64-runtime-smoke:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    env:
+      V18J_ARTIFACT_ID: '8442434345'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM64 runtime test tools
+        run: |
+          set -euo pipefail
+          uname -a | tee runner-uname.txt
+          dpkg --print-architecture | tee runner-architecture.txt
+          test "$(dpkg --print-architecture)" = arm64
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            curl unzip zstd file binutils xvfb x11-utils xdotool imagemagick \
+            procps psmisc
+          Xvfb -help > xvfb-help.txt 2>&1 || true
+          grep -F -- '-extension extensionName' xvfb-help.txt
+
+      - name: Download proven v18J APK artifact internally
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V18J_ARTIFACT_ID}/zip" \
+            -o v18j-artifact.zip
+          unzip -q v18j-artifact.zip -d v18j-artifact
+          APK="$(find v18j-artifact -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          sha256sum "$APK" | tee v18j-apk-sha256.txt
+          grep -F '4003bcb0c863519720116d93540e161d640800692c0e002f7e8ac42434e5a215' \
+            v18j-apk-sha256.txt
+          cp "$APK" v18j.apk
+
+      - name: Extract exact APK runtime
+        run: |
+          set -euo pipefail
+          mkdir -p apk rootfs box64 prefix smoke
+          unzip -q v18j.apk \
+            assets/rootfs.tzst \
+            assets/container_pattern.tzst \
+            assets/box64/box64-0.4.0.tzst \
+            -d apk
+          tar --use-compress-program=unzstd -xf apk/assets/rootfs.tzst -C rootfs
+          tar --use-compress-program=unzstd -xf apk/assets/box64/box64-0.4.0.tzst -C box64
+          tar --use-compress-program=unzstd -xf apk/assets/container_pattern.tzst -C prefix
+
+          file box64/usr/local/bin/box64 \
+               rootfs/opt/wine/bin/wine \
+               rootfs/opt/wine/bin/wineserver | tee exact-runtime-file-types.txt
+          grep -F 'ARM aarch64' exact-runtime-file-types.txt
+          grep -F 'x86-64' exact-runtime-file-types.txt
+
+          sudo install -m 0755 box64/usr/local/bin/box64 rootfs/usr/local/bin/box64
+          sudo mkdir -p rootfs/home/winlator rootfs/data/data/com.winlator.trcompat/files
+          sudo cp -a prefix/.wine rootfs/home/winlator/.wine
+          sudo ln -sfn / rootfs/data/data/com.winlator.trcompat/files/rootfs
+
+          sudo mkdir -p rootfs/etc rootfs/var/lib/dbus rootfs/tmp rootfs/dev rootfs/proc rootfs/sys
+          printf '%s\n' 0123456789abcdef0123456789abcdef | sudo tee rootfs/etc/machine-id >/dev/null
+          sudo ln -sfn /etc/machine-id rootfs/var/lib/dbus/machine-id
+
+          test -x rootfs/usr/local/bin/box64
+          test -x rootfs/opt/wine/bin/wine
+          test -x rootfs/opt/wine/bin/wineserver
+          test -f rootfs/opt/wine/lib/wine/x86_64-windows/explorer.exe
+
+      - name: Mount runtime namespace
+        run: |
+          set -euo pipefail
+          sudo mount --rbind /dev rootfs/dev
+          sudo mount --make-rslave rootfs/dev
+          sudo mount -t proc proc rootfs/proc
+          sudo mount --rbind /sys rootfs/sys
+          sudo mount --make-rslave rootfs/sys
+          sudo mount --bind /tmp rootfs/tmp
+
+      - name: Run Explorer with and without advertised SHAPE
+        run: |
+          set -euo pipefail
+
+          cleanup_case() {
+            local display="$1"
+            pkill -f "Xvfb ${display}" || true
+            sudo pkill -TERM -f '/opt/wine/bin/wine' || true
+            sudo pkill -TERM -f '/opt/wine/bin/wineserver' || true
+            sleep 2
+            sudo pkill -KILL -f '/opt/wine/bin/wine' || true
+            sudo pkill -KILL -f '/opt/wine/bin/wineserver' || true
+          }
+
+          run_case() {
+            local name="$1"
+            local display="$2"
+            shift 2
+            local out="smoke/${name}"
+            mkdir -p "$out"
+            cleanup_case "$display"
+
+            Xvfb "$display" -screen 0 1280x720x24 -nolisten tcp "$@" \
+              >"$out/xvfb.log" 2>&1 &
+            local xvfb_pid=$!
+            for _ in $(seq 1 30); do
+              xdpyinfo -display "$display" >/dev/null 2>&1 && break
+              sleep 1
+            done
+            xdpyinfo -display "$display" >"$out/xdpyinfo.txt"
+            xdpyinfo -display "$display" | sed -n '/number of extensions:/,/default screen number:/p' \
+              >"$out/extensions.txt"
+
+            sudo env \
+              HOME=/home/winlator \
+              USER=winlator \
+              DISPLAY="$display" \
+              WINEPREFIX=/home/winlator/.wine \
+              WINEDEBUG=warn+all,err+all \
+              PATH=/opt/wine/bin:/usr/local/bin:/usr/bin:/bin \
+              BOX64_NOBANNER=0 \
+              BOX64_LOG=1 \
+              BOX64_DYNAREC=1 \
+              BOX64_PATH=/opt/wine/bin:/usr/bin:/bin \
+              BOX64_LD_LIBRARY_PATH=/opt/wine/lib:/usr/lib:/lib \
+              timeout --signal=TERM 100s \
+              chroot rootfs /usr/local/bin/box64 /opt/wine/bin/wine \
+              explorer.exe /desktop=TRSmoke,1280x720 \
+              >"$out/wine.log" 2>&1 &
+            local wine_pid=$!
+
+            local alive_checks=0
+            local window_checks=0
+            for second in 10 20 30 40 50 60; do
+              sleep 10
+              printf '=== t=%ss ===\n' "$second" >>"$out/processes.txt"
+              ps -eo pid,ppid,stat,etime,comm,args \
+                | grep -E 'box64|wine|wineserver|explorer' \
+                | grep -v grep >>"$out/processes.txt" || true
+              if kill -0 "$wine_pid" 2>/dev/null; then alive_checks=$((alive_checks + 1)); fi
+              xwininfo -display "$display" -root -tree >"$out/xwininfo-${second}.txt" 2>&1 || true
+              if grep -Eqi 'TRSmoke|Wine desktop|explorer' "$out/xwininfo-${second}.txt"; then
+                window_checks=$((window_checks + 1))
+              fi
+              import -display "$display" -window root "$out/screen-${second}.png" || true
+            done
+
+            printf 'alive_checks=%s\nwindow_checks=%s\n' "$alive_checks" "$window_checks" \
+              | tee "$out/result.txt"
+            grep -E 'c0000135|service.*126|RpcSs.*fail|segmentation fault|SIGSEGV' \
+              "$out/wine.log" >"$out/fatal-markers.txt" || true
+
+            kill "$wine_pid" 2>/dev/null || true
+            wait "$wine_pid" || true
+            kill "$xvfb_pid" 2>/dev/null || true
+            wait "$xvfb_pid" || true
+            cleanup_case "$display"
+
+            test "$alive_checks" -ge 5
+            test "$window_checks" -ge 5
+            test ! -s "$out/fatal-markers.txt"
+          }
+
+          run_case shape-advertised :99
+          run_case shape-not-advertised :100 -extension SHAPE
+
+      - name: Unmount runtime namespace
+        if: always()
+        run: |
+          sudo umount -l rootfs/tmp 2>/dev/null || true
+          sudo umount -l rootfs/proc 2>/dev/null || true
+          sudo umount -R -l rootfs/sys 2>/dev/null || true
+          sudo umount -R -l rootfs/dev 2>/dev/null || true
+
+      - name: Upload ARM64 runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V18J_ARM64_BOX64_WINE_EXPLORER_SMOKE_EVIDENCE
+          path: |
+            smoke/
+            runner-uname.txt
+            runner-architecture.txt
+            xvfb-help.txt
+            v18j-apk-sha256.txt
+            exact-runtime-file-types.txt
+          if-no-files-found: warn

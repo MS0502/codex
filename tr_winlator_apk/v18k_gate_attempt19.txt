@@ -1,0 +1,1 @@
+Attempt 19: write Shell_TrayWnd and Start-button probe results directly into C: files at 12 and 50 seconds, avoiding console-output forwarding. No APK or game file is changed.

@@ -1,0 +1,1 @@
+Attempt 13: run the corrected compiled no-SHAPE Xvfb workflow using Ninja's default build graph, then compare v18J baseline and the two-file XShape-restored candidate. No APK or game file is changed.

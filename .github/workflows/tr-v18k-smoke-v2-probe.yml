@@ -1,0 +1,33 @@
+name: Report registered ARM64 Explorer baseline
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-xshape-restore-v18k]
+    paths: [.github/workflows/tr-v18k-smoke-v2-probe.yml]
+
+permissions:
+  actions: read
+  issues: write
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Wait for baseline and post result
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          API="repos/${GITHUB_REPOSITORY}/actions/workflows/tr-v18k-arm64-runtime-smoke-v2.yml/runs?branch=tr-wine-compat-proton11-xshape-restore-v18k&per_page=1"
+          RUN=''
+          for _ in $(seq 1 80); do
+            RUN="$(gh api "$API" --jq '.workflow_runs[0]')"
+            if [ "$(jq -r .status <<<"$RUN")" = completed ]; then break; fi
+            sleep 10
+          done
+          ID="$(jq -r .id <<<"$RUN")"
+          STATUS="$(jq -r .status <<<"$RUN")"
+          CONCLUSION="$(jq -r '.conclusion // "pending"' <<<"$RUN")"
+          BODY="ARM64 Explorer registered baseline: run ${ID}, status **${STATUS}**, conclusion **${CONCLUSION}**."
+          gh api "repos/${GITHUB_REPOSITORY}/issues/19/comments" -f body="$BODY"

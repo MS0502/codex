@@ -1,0 +1,1 @@
+Attempt 18: rebuild the taskbar HWND probe with the standard console entry point, then inspect Shell_TrayWnd and its Start button at 12 and 50 seconds. No APK or game file is changed.
