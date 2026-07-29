@@ -228,7 +228,7 @@ def install_ci_wrappers() -> None:
         "replacements = {\n"
         "    'rm -rf /work/wine-build /work/wine-stage /work/native-prefix': 'rm -rf /work/wine-build /work/wine-stage /tmp/native-prefix',\n"
         "    'export WINEPREFIX=/work/native-prefix': 'export WINEPREFIX=/tmp/native-prefix',\n"
-        "    'timeout 90 /work/wine-stage/opt/wine/bin/wineboot -u': \"/bin/sh -c '/work/wine-stage/opt/wine/bin/wineboot --init & wineboot_pid=$!; ready=0; for _ in $(seq 1 300); do if [ -s \\\"$WINEPREFIX/system.reg\\\" ] && /work/wine-stage/opt/wine/bin/wine cmd /c ver > /work/native-wineboot-readiness.log 2>&1; then ready=1; break; fi; if ! kill -0 \\\"$wineboot_pid\\\" 2>/dev/null; then wait \\\"$wineboot_pid\\\"; exit $?; fi; sleep 1; done; if [ \\\"$ready\\\" -ne 1 ]; then kill \\\"$wineboot_pid\\\" 2>/dev/null || true; wait \\\"$wineboot_pid\\\" 2>/dev/null || true; exit 124; fi; kill \\\"$wineboot_pid\\\" 2>/dev/null || true; wait \\\"$wineboot_pid\\\" 2>/dev/null || true'\",\n"
+        "    'timeout 90 /work/wine-stage/opt/wine/bin/wineboot -u': \"/bin/sh -c '/work/wine-stage/opt/wine/bin/wineboot --init & wineboot_pid=$!; ready=0; for _ in $(seq 1 300); do if [ -s \\\"$WINEPREFIX/system.reg\\\" ] && /work/wine-stage/opt/wine/bin/wine cmd /c ver > /work/native-wineboot-readiness.log 2>&1 && /work/wine-stage/opt/wine/bin/wine /work/token-private-namespace-x86.exe > /work/native-token-x86-readiness.log 2>&1 && grep -Fq \\\"status=00000000 value=0 length=4\\\" /work/native-token-x86-readiness.log; then ready=1; break; fi; if ! kill -0 \\\"$wineboot_pid\\\" 2>/dev/null; then wait \\\"$wineboot_pid\\\"; exit $?; fi; sleep 1; done; if [ \\\"$ready\\\" -ne 1 ]; then kill \\\"$wineboot_pid\\\" 2>/dev/null || true; wait \\\"$wineboot_pid\\\" 2>/dev/null || true; exit 124; fi; kill \\\"$wineboot_pid\\\" 2>/dev/null || true; wait \\\"$wineboot_pid\\\" 2>/dev/null || true'\",\n"
         "}\n"
         "for old, new in replacements.items():\n"
         "    count = text.count(old)\n"
@@ -270,7 +270,7 @@ def main() -> int:
         "token_private_namespace=desktop_false_for_x64_and_wow64",
         "x11_create_override_redirect=deferred_after_creation_mr7181",
         "native_ci_prefix=/tmp/native-prefix",
-        "native_ci_wineboot_mode=readiness_gated_init",
+        "native_ci_wineboot_mode=readiness_gated_init_x86",
         "native_ci_wineboot_timeout=300_seconds",
         "xshape=disabled_at_configure_time",
         "security_bypass=none",
