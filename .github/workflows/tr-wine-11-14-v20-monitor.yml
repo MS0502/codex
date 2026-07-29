@@ -7,7 +7,7 @@ on:
 
 permissions:
   actions: read
-  contents: read
+  contents: write
   pull-requests: write
 
 concurrency:
@@ -25,13 +25,58 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       TARGET_WORKFLOW: TR Wine 11.14 Winlator v20 gated APK
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tr-wine-11-14-talesrunner-v20
+          fetch-depth: 0
+
+      - name: Repair known native Wine probe harness defect
+        id: repair
+        run: |
+          set -euo pipefail
+          target=.github/workflows/tr-wine-11-14-v20.yml
+          changed=0
+          if grep -Fq 'rm -rf /work/wine-build /work/wine-stage /work/native-prefix' "$target"; then
+            sed -i 's#rm -rf /work/wine-build /work/wine-stage /work/native-prefix#rm -rf /work/wine-build /work/wine-stage /tmp/native-prefix#' "$target"
+            changed=1
+          fi
+          if grep -Fq 'export WINEPREFIX=/work/native-prefix' "$target"; then
+            sed -i 's#export WINEPREFIX=/work/native-prefix#export WINEPREFIX=/tmp/native-prefix#' "$target"
+            changed=1
+          fi
+          if grep -Fq 'timeout 90 /work/wine-stage/opt/wine/bin/wineboot -u' "$target"; then
+            sed -i 's#timeout 90 /work/wine-stage/opt/wine/bin/wineboot -u#timeout --signal=TERM --kill-after=10 300 /work/wine-stage/opt/wine/bin/wineboot -u#' "$target"
+            changed=1
+          fi
+          grep -F 'rm -rf /work/wine-build /work/wine-stage /tmp/native-prefix' "$target"
+          grep -F 'export WINEPREFIX=/tmp/native-prefix' "$target"
+          grep -F 'timeout --signal=TERM --kill-after=10 300 /work/wine-stage/opt/wine/bin/wineboot -u' "$target"
+          git diff --check
+          if [ "$changed" = 1 ]; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add "$target"
+            git commit -m 'ci: fix native Wine prefix ownership and timeout'
+            git push origin HEAD:tr-wine-11-14-talesrunner-v20
+            echo 'pushed=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'pushed=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop superseded monitor after repair push
+        if: steps.repair.outputs.pushed == 'true'
+        run: |
+          echo 'A corrected exact head was pushed; its synchronize run will monitor the new build.'
+
       - name: Report monitoring start
+        if: steps.repair.outputs.pushed != 'true'
         run: |
           set -euo pipefail
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
             --body "Wine 11.14 v20 build monitor started for exact head \`$HEAD_SHA\`. No APK is approved for phone installation unless the ARM64-gated artifact is published."
 
       - name: Locate exact push workflow run
+        if: steps.repair.outputs.pushed != 'true'
         id: locate
         run: |
           set -euo pipefail
@@ -61,6 +106,7 @@ jobs:
             --body "Exact build run located: $run_url (run id \`$run_id\`). Waiting for build and ARM64 runtime gate."
 
       - name: Wait for exact run completion
+        if: steps.repair.outputs.pushed != 'true'
         id: wait
         env:
           RUN_ID: ${{ steps.locate.outputs.run_id }}
@@ -87,7 +133,7 @@ jobs:
 
       - name: Collect final jobs and artifacts
         id: result
-        if: always() && steps.locate.outputs.run_id != ''
+        if: always() && steps.repair.outputs.pushed != 'true' && steps.locate.outputs.run_id != ''
         env:
           RUN_ID: ${{ steps.locate.outputs.run_id }}
         run: |
@@ -106,7 +152,7 @@ jobs:
           echo "gated=$gated" >> "$GITHUB_OUTPUT"
 
       - name: Publish final PR status
-        if: always() && steps.locate.outputs.run_id != ''
+        if: always() && steps.repair.outputs.pushed != 'true' && steps.locate.outputs.run_id != ''
         env:
           RUN_ID: ${{ steps.locate.outputs.run_id }}
           RUN_URL: ${{ steps.locate.outputs.run_url }}
