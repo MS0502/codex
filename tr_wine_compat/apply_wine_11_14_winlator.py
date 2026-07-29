@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +16,41 @@ def replace_once(path: Path, old: str, new: str) -> None:
     if count != 1:
         raise RuntimeError(f"{path}: expected exactly one anchor, found {count}: {old!r}")
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def validate_source(root: Path) -> None:
+    head = subprocess.check_output(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+    ).strip()
+    if head != EXPECTED_HEAD:
+        raise RuntimeError(f"unexpected Wine source head: {head}")
+
+    required = {
+        "server/request.c": [
+            "#ifdef __ANDROID__  /* there's no /tmp dir on Android */",
+            'if (asprintf( &base_dir, "/tmp/.wine-%u", getuid() ) == -1)',
+        ],
+        "dlls/ntdll/unix/server.c": [
+            "#ifdef __ANDROID__  /* there's no /tmp dir on Android */",
+            'asprintf( &dir, "/tmp/.wine-%u/server-%llx-%llx"',
+        ],
+        "dlls/nsiproxy.sys/nsi.c": [
+            "#if defined(HAVE_LINUX_RTNETLINK_H) || defined(__APPLE__)",
+        ],
+        "dlls/ntdll/unix/security.c": [
+            "        0     /* TokenProcessTrustLevel */",
+            "    if (class < MaxTokenInfoClass) len = info_len[class];",
+            "    case TokenLinkedToken:\n",
+        ],
+        "dlls/wow64/security.c": [
+            "    case TokenIsAppContainer:  /* ULONG */\n",
+        ],
+    }
+    for rel, needles in required.items():
+        text = (root / rel).read_text(encoding="utf-8")
+        for needle in needles:
+            if needle not in text:
+                raise RuntimeError(f"source anchor missing in {rel}: {needle}")
 
 
 def patch_wineserver_paths(root: Path) -> None:
@@ -97,25 +134,41 @@ def patch_token_private_namespace(root: Path) -> None:
     )
 
 
-def validate(root: Path) -> None:
-    head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
-    if head != EXPECTED_HEAD:
-        raise RuntimeError(f"unexpected Wine source head: {head}")
-
+def validate_patched(root: Path) -> None:
     checks = {
-        "server/request.c": ["%s/.wineserver", "/tmp/.wine-%u"],
-        "dlls/ntdll/unix/server.c": ["%s/.wineserver/server-%llx-%llx", "/tmp/.wine-%u"],
-        "dlls/ntdll/unix/security.c": ["case TokenPrivateNameSpace:", "ARRAY_SIZE(info_len)"],
+        "server/request.c": ["%s/.wineserver"],
+        "dlls/ntdll/unix/server.c": ["%s/.wineserver/server-%llx-%llx"],
+        "dlls/ntdll/unix/security.c": [
+            "case TokenPrivateNameSpace:",
+            "ARRAY_SIZE(info_len)",
+            "sizeof(DWORD) /* TokenPrivateNameSpace */",
+        ],
         "dlls/wow64/security.c": ["case TokenPrivateNameSpace:  /* ULONG */"],
     }
     for rel, needles in checks.items():
         text = (root / rel).read_text(encoding="utf-8")
+        if "/tmp/.wine-%u" in text:
+            raise RuntimeError(f"legacy wineserver path remains in {rel}")
         for needle in needles:
-            if needle == "/tmp/.wine-%u":
-                if needle in text:
-                    raise RuntimeError(f"legacy wineserver path remains in {rel}")
-            elif needle not in text:
-                raise RuntimeError(f"validation anchor missing in {rel}: {needle}")
+            if needle not in text:
+                raise RuntimeError(f"patched anchor missing in {rel}: {needle}")
+
+    nsi_text = (root / "dlls/nsiproxy.sys/nsi.c").read_text(encoding="utf-8")
+    if "#if defined(HAVE_LINUX_RTNETLINK_H) || defined(__APPLE__)" in nsi_text:
+        raise RuntimeError("Linux rtnetlink notification path remains enabled")
+
+
+def install_ci_objdump_wrapper() -> None:
+    github_path = os.environ.get("GITHUB_PATH")
+    if not github_path:
+        return
+    bindir = Path.cwd() / ".tr-ci-bin"
+    bindir.mkdir(exist_ok=True)
+    wrapper = bindir / "x86_64-w64-mingw32-objdump"
+    wrapper.write_text("#!/bin/sh\nexec objdump \"$@\"\n", encoding="utf-8")
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    with Path(github_path).open("a", encoding="utf-8") as stream:
+        stream.write(str(bindir.resolve()) + "\n")
 
 
 def main() -> int:
@@ -124,10 +177,12 @@ def main() -> int:
         return 2
 
     root = Path(sys.argv[1]).resolve()
-    validate(root)
+    validate_source(root)
     patch_wineserver_paths(root)
     patch_android_nsi(root)
     patch_token_private_namespace(root)
+    validate_patched(root)
+    install_ci_objdump_wrapper()
 
     subprocess.run(["git", "-C", str(root), "diff", "--check"], check=True)
     report = "\n".join([
