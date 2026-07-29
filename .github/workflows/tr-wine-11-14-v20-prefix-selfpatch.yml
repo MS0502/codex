@@ -5,6 +5,7 @@ on:
     branches: [tr-wine-11-14-talesrunner-v20]
     paths:
       - .github/workflows/tr-wine-11-14-v20-prefix-selfpatch.yml
+  workflow_dispatch:
 
 permissions:
   contents: write
