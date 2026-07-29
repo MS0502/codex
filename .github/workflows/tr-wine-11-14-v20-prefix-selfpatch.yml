@@ -1,4 +1,4 @@
-name: Patch TR Wine 11.14 native prefix
+name: Patch TR Wine 11.14 native prefix and timeout
 
 on:
   push:
@@ -18,18 +18,21 @@ jobs:
           ref: tr-wine-11-14-talesrunner-v20
           fetch-depth: 0
 
-      - name: Move native Wine test prefix off the bind mount
+      - name: Repair native Wine probe harness
         run: |
           set -euo pipefail
           target=.github/workflows/tr-wine-11-14-v20.yml
           grep -F 'rm -rf /work/wine-build /work/wine-stage /work/native-prefix' "$target"
           grep -F 'export WINEPREFIX=/work/native-prefix' "$target"
+          grep -F 'timeout 90 /work/wine-stage/opt/wine/bin/wineboot -u' "$target"
           sed -i \
             -e 's#rm -rf /work/wine-build /work/wine-stage /work/native-prefix#rm -rf /work/wine-build /work/wine-stage /tmp/native-prefix#' \
             -e 's#export WINEPREFIX=/work/native-prefix#export WINEPREFIX=/tmp/native-prefix#' \
+            -e 's#timeout 90 /work/wine-stage/opt/wine/bin/wineboot -u#timeout --signal=TERM --kill-after=10 300 /work/wine-stage/opt/wine/bin/wineboot -u#' \
             "$target"
           grep -F 'rm -rf /work/wine-build /work/wine-stage /tmp/native-prefix' "$target"
           grep -F 'export WINEPREFIX=/tmp/native-prefix' "$target"
+          grep -F 'timeout --signal=TERM --kill-after=10 300 /work/wine-stage/opt/wine/bin/wineboot -u' "$target"
           git diff --check
 
       - name: Commit exact CI harness fix
@@ -38,5 +41,5 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add .github/workflows/tr-wine-11-14-v20.yml
-          git commit -m 'ci: use owned tmp prefix for native Wine gate'
+          git commit -m 'ci: allow first Wine prefix initialization to complete'
           git push origin HEAD:tr-wine-11-14-talesrunner-v20
