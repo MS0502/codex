@@ -1,4 +1,4 @@
-name: Patch TR Wine 11.14 native prefix and timeout
+name: Patch TR Wine 11.14 native probe readiness
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  patch-prefix-and-rebuild:
+  patch-native-probe-readiness:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -19,28 +19,29 @@ jobs:
           ref: tr-wine-11-14-talesrunner-v20
           fetch-depth: 0
 
-      - name: Repair native Wine probe harness
+      - name: Require WoW64 readiness before stopping wineboot
         run: |
           set -euo pipefail
-          target=.github/workflows/tr-wine-11-14-v20.yml
-          grep -F 'rm -rf /work/wine-build /work/wine-stage /work/native-prefix' "$target"
-          grep -F 'export WINEPREFIX=/work/native-prefix' "$target"
-          grep -F 'timeout 90 /work/wine-stage/opt/wine/bin/wineboot -u' "$target"
-          sed -i \
-            -e 's#rm -rf /work/wine-build /work/wine-stage /work/native-prefix#rm -rf /work/wine-build /work/wine-stage /tmp/native-prefix#' \
-            -e 's#export WINEPREFIX=/work/native-prefix#export WINEPREFIX=/tmp/native-prefix#' \
-            -e 's#timeout 90 /work/wine-stage/opt/wine/bin/wineboot -u#timeout --signal=TERM --kill-after=10 300 /work/wine-stage/opt/wine/bin/wineboot -u#' \
-            "$target"
-          grep -F 'rm -rf /work/wine-build /work/wine-stage /tmp/native-prefix' "$target"
-          grep -F 'export WINEPREFIX=/tmp/native-prefix' "$target"
-          grep -F 'timeout --signal=TERM --kill-after=10 300 /work/wine-stage/opt/wine/bin/wineboot -u' "$target"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tr_wine_compat/apply_wine_11_14_winlator.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''if [ -s \\\"$WINEPREFIX/system.reg\\\" ] && /work/wine-stage/opt/wine/bin/wine cmd /c ver > /work/native-wineboot-readiness.log 2>&1; then ready=1; break; fi;'''
+          new = '''if [ -s \\\"$WINEPREFIX/system.reg\\\" ] && /work/wine-stage/opt/wine/bin/wine cmd /c ver > /work/native-wineboot-readiness.log 2>&1 && /work/wine-stage/opt/wine/bin/wine /work/token-private-namespace-x86.exe > /work/native-wow64-readiness.log 2>&1 && grep -F 'status=00000000 value=0 length=4' /work/native-wow64-readiness.log >/dev/null; then ready=1; break; fi;'''
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected one native readiness anchor, found {count}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          grep -F 'native-wow64-readiness.log' tr_wine_compat/apply_wine_11_14_winlator.py
           git diff --check
 
-      - name: Commit exact CI harness fix
+      - name: Commit exact native probe fix
         run: |
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add .github/workflows/tr-wine-11-14-v20.yml
-          git commit -m 'ci: allow first Wine prefix initialization to complete'
+          git add tr_wine_compat/apply_wine_11_14_winlator.py
+          git commit -m 'ci: wait for WoW64 readiness before ending wineboot'
           git push origin HEAD:tr-wine-11-14-talesrunner-v20
