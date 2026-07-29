@@ -1,0 +1,140 @@
+name: Monitor TR Wine 11.14 v20 build
+
+on:
+  pull_request:
+    branches: [tr-wine-compat-proton11-native-wrapper-closure-v18j]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: monitor-tr-wine-11-14-v20-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  monitor:
+    if: github.event.pull_request.head.ref == 'tr-wine-11-14-talesrunner-v20'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      TARGET_WORKFLOW: TR Wine 11.14 Winlator v20 gated APK
+    steps:
+      - name: Report monitoring start
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "Wine 11.14 v20 build monitor started for exact head \`$HEAD_SHA\`. No APK is approved for phone installation unless the ARM64-gated artifact is published."
+
+      - name: Locate exact push workflow run
+        id: locate
+        run: |
+          set -euo pipefail
+          run_id=""
+          run_url=""
+          for attempt in $(seq 1 20); do
+            response="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$HEAD_SHA&per_page=100")"
+            run_id="$(jq -r --arg name "$TARGET_WORKFLOW" \
+              '.workflow_runs | map(select(.name == $name and .event == "push")) | sort_by(.created_at) | last | .id // empty' \
+              <<<"$response")"
+            run_url="$(jq -r --arg name "$TARGET_WORKFLOW" \
+              '.workflow_runs | map(select(.name == $name and .event == "push")) | sort_by(.created_at) | last | .html_url // empty' \
+              <<<"$response")"
+            if [ -n "$run_id" ]; then break; fi
+            sleep 30
+          done
+          if [ -z "$run_id" ]; then
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body "BLOCKED: no push workflow run was created for exact head \`$HEAD_SHA\` within 10 minutes. This indicates a workflow registration or YAML trigger problem; no APK was produced."
+            exit 1
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "run_url=$run_url" >> "$GITHUB_OUTPUT"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "Exact build run located: $run_url (run id \`$run_id\`). Waiting for build and ARM64 runtime gate."
+
+      - name: Wait for exact run completion
+        id: wait
+        env:
+          RUN_ID: ${{ steps.locate.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          conclusion=""
+          status=""
+          for attempt in $(seq 1 350); do
+            response="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID")"
+            status="$(jq -r '.status' <<<"$response")"
+            conclusion="$(jq -r '.conclusion // empty' <<<"$response")"
+            echo "attempt=$attempt status=$status conclusion=${conclusion:-pending}"
+            if [ "$status" = "completed" ]; then break; fi
+            sleep 60
+          done
+          if [ "$status" != "completed" ]; then
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body "BLOCKED: exact build run \`$RUN_ID\` did not finish within the monitor window. No APK is approved."
+            exit 1
+          fi
+          echo "conclusion=$conclusion" >> "$GITHUB_OUTPUT"
+
+      - name: Collect final jobs and artifacts
+        id: result
+        if: always() && steps.locate.outputs.run_id != ''
+        env:
+          RUN_ID: ${{ steps.locate.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          jobs="$(gh api --paginate \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100")"
+          artifacts="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100")"
+          jq -r '.jobs[] | "- " + .name + ": " + .status + "/" + (.conclusion // "pending")' \
+            <<<"$jobs" > jobs.txt
+          jq -r '.artifacts[] | "- " + .name + " (" + (.size_in_bytes|tostring) + " bytes)"' \
+            <<<"$artifacts" > artifacts.txt
+          gated="$(jq -r '[.artifacts[] | select(.name == "WINLATOR_11_1_TR_COMPAT_V20_WINE_11_14_ARM64_GATED")] | length' <<<"$artifacts")"
+          echo "gated=$gated" >> "$GITHUB_OUTPUT"
+
+      - name: Publish final PR status
+        if: always() && steps.locate.outputs.run_id != ''
+        env:
+          RUN_ID: ${{ steps.locate.outputs.run_id }}
+          RUN_URL: ${{ steps.locate.outputs.run_url }}
+          CONCLUSION: ${{ steps.wait.outputs.conclusion }}
+          GATED: ${{ steps.result.outputs.gated }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Wine 11.14 v20 exact build finished."
+            echo
+            echo "- run: $RUN_URL"
+            echo "- exact head: \`$HEAD_SHA\`"
+            echo "- conclusion: \`${CONCLUSION:-unknown}\`"
+            echo "- ARM64-gated APK artifact count: \`${GATED:-0}\`"
+            echo
+            echo "Jobs:"
+            cat jobs.txt 2>/dev/null || true
+            echo
+            echo "Artifacts:"
+            cat artifacts.txt 2>/dev/null || true
+            echo
+            if [ "${CONCLUSION:-}" = "success" ] && [ "${GATED:-0}" = "1" ]; then
+              echo "Gate result: PASS. Only the ARM64-gated artifact is eligible for phone installation. This does not claim TalesRunner or XIGNCODE success."
+            else
+              echo "Gate result: FAIL/BLOCKED. No APK from this run is approved for phone installation."
+            fi
+          } > comment.md
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file comment.md
+
+          test "${CONCLUSION:-}" = "success"
+          test "${GATED:-0}" = "1"
