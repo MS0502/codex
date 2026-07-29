@@ -1,3 +1,4 @@
+# Retriggered after diagnostic-preservation fix.
 name: TR ARM64EC FEX parallel feasibility probe
 
 on:
