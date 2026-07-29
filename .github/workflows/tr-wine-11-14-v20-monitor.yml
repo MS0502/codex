@@ -30,38 +30,15 @@ jobs:
           ref: tr-wine-11-14-talesrunner-v20
           fetch-depth: 0
 
-      - name: Repair known native Wine probe harness defect
+      - name: Verify wrapper-based native Wine probe repair
         id: repair
         run: |
           set -euo pipefail
-          target=.github/workflows/tr-wine-11-14-v20.yml
-          changed=0
-          if grep -Fq 'rm -rf /work/wine-build /work/wine-stage /work/native-prefix' "$target"; then
-            sed -i 's#rm -rf /work/wine-build /work/wine-stage /work/native-prefix#rm -rf /work/wine-build /work/wine-stage /tmp/native-prefix#' "$target"
-            changed=1
-          fi
-          if grep -Fq 'export WINEPREFIX=/work/native-prefix' "$target"; then
-            sed -i 's#export WINEPREFIX=/work/native-prefix#export WINEPREFIX=/tmp/native-prefix#' "$target"
-            changed=1
-          fi
-          if grep -Fq 'timeout 90 /work/wine-stage/opt/wine/bin/wineboot -u' "$target"; then
-            sed -i 's#timeout 90 /work/wine-stage/opt/wine/bin/wineboot -u#timeout --signal=TERM --kill-after=10 300 /work/wine-stage/opt/wine/bin/wineboot -u#' "$target"
-            changed=1
-          fi
-          grep -F 'rm -rf /work/wine-build /work/wine-stage /tmp/native-prefix' "$target"
-          grep -F 'export WINEPREFIX=/tmp/native-prefix' "$target"
-          grep -F 'timeout --signal=TERM --kill-after=10 300 /work/wine-stage/opt/wine/bin/wineboot -u' "$target"
-          git diff --check
-          if [ "$changed" = 1 ]; then
-            git config user.name github-actions[bot]
-            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git add "$target"
-            git commit -m 'ci: fix native Wine prefix ownership and timeout'
-            git push origin HEAD:tr-wine-11-14-talesrunner-v20
-            echo 'pushed=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'pushed=false' >> "$GITHUB_OUTPUT"
-          fi
+          target=tr_wine_compat/apply_wine_11_14_winlator.py
+          grep -F "'rm -rf /work/wine-build /work/wine-stage /work/native-prefix': 'rm -rf /work/wine-build /work/wine-stage /tmp/native-prefix'" "$target"
+          grep -F "'export WINEPREFIX=/work/native-prefix': 'export WINEPREFIX=/tmp/native-prefix'" "$target"
+          grep -F "'timeout 90 /work/wine-stage/opt/wine/bin/wineboot -u': 'timeout --signal=TERM --kill-after=10 300 /work/wine-stage/opt/wine/bin/wineboot -u'" "$target"
+          echo 'pushed=false' >> "$GITHUB_OUTPUT"
 
       - name: Stop superseded monitor after repair push
         if: steps.repair.outputs.pushed == 'true'
