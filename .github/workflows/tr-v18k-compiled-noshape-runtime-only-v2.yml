@@ -1,0 +1,116 @@
+name: TR v18K compiled no-SHAPE runtime-only matrix v2
+
+on:
+  pull_request:
+    branches: [tr-wine-compat-proton11-native-wrapper-closure-v18j]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  no-shape-runtime:
+    if: github.event.pull_request.head.ref == 'tr-wine-compat-proton11-xshape-restore-v18k'
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [v18j-baseline, xshape-restored]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    env:
+      NOSHAPE_XVFB_ARTIFACT_ID: '8452817968'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM64 runtime tools
+        run: |
+          set -euo pipefail
+          test "$(dpkg --print-architecture)" = arm64
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            curl unzip zstd file binutils x11-utils imagemagick procps \
+            gcc libx11-dev
+          python3 -m py_compile tr_winlator_apk/materialize_main_wine_container.py
+          bash -n tr_winlator_apk/run_v18k_noshape_variant.sh
+
+      - name: Download proven compiled no-SHAPE Xvfb
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p noshape-artifact wrapper-evidence
+          curl --fail --location --retry 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${NOSHAPE_XVFB_ARTIFACT_ID}/zip" \
+            -o noshape-xvfb.zip
+          unzip -q noshape-xvfb.zip -d noshape-artifact
+          find noshape-artifact -maxdepth 3 -type f -printf '%p %s bytes\n' \
+            | tee wrapper-evidence/artifact-files.txt
+          XVFB="$(find noshape-artifact -type f -name Xvfb-no-shape -print -quit)"
+          test -n "$XVFB"
+          chmod 0755 "$XVFB"
+          file "$XVFB" | tee wrapper-evidence/xvfb-file.txt
+          sha256sum "$XVFB" | tee wrapper-evidence/xvfb-sha256.txt
+          grep -F 'b6a9f2de820fc35b44409bfa0f863a4e5f63fcc1bbb4e52f6673033110e2668f' \
+            wrapper-evidence/xvfb-sha256.txt
+          sudo install -D -m 0755 "$XVFB" /usr/local/libexec/Xvfb-no-shape
+          test -x /usr/local/libexec/Xvfb-no-shape
+
+      - name: Install and smoke-test Xorg-compatible wrapper
+        run: |
+          set -euo pipefail
+          cat > Xorg <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ "${1:-}" != :* ]]; then
+            exec /usr/local/libexec/Xvfb-no-shape -help
+          fi
+          display="$1"
+          exec /usr/local/libexec/Xvfb-no-shape "$display" \
+            -ac -screen 0 1280x720x24 -listen tcp
+          EOF
+          sudo install -D -m 0755 Xorg /usr/local/bin/Xorg
+          test -x /usr/local/bin/Xorg
+          /usr/local/bin/Xorg -help > wrapper-evidence/wrapper-help.txt 2>&1 || true
+          test -s wrapper-evidence/wrapper-help.txt
+          grep -F -- '-screen scrn WxHxD' wrapper-evidence/wrapper-help.txt
+
+          /usr/local/bin/Xorg :108 > wrapper-evidence/wrapper-smoke.log 2>&1 &
+          PID=$!
+          trap 'kill "$PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            xdpyinfo -display 127.0.0.1:108.0 >/dev/null 2>&1 && break
+            sleep 1
+          done
+          xdpyinfo -display 127.0.0.1:108.0 \
+            | tee wrapper-evidence/xdpyinfo-wrapper.txt
+          test "$(grep -c SHAPE wrapper-evidence/xdpyinfo-wrapper.txt || true)" -eq 0
+          kill "$PID"
+          wait "$PID" || true
+          trap - EXIT
+
+      - name: Run exact Winlator variant on true no-SHAPE X server
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PATH="/usr/local/bin:$PATH" \
+            bash tr_winlator_apk/run_v18k_noshape_variant.sh '${{ matrix.variant }}'
+
+      - name: Cleanup runtime
+        if: always()
+        run: |
+          sudo pkill -KILL -f Xvfb-no-shape 2>/dev/null || true
+          sudo pkill -KILL box64 2>/dev/null || true
+
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V18K_TRUE_NOSHAPE_V2_${{ matrix.variant }}_EVIDENCE
+          path: |
+            evidence-${{ matrix.variant }}/
+            wrapper-evidence/
+          if-no-files-found: warn

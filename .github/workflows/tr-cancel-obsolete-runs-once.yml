@@ -1,0 +1,40 @@
+name: Cancel obsolete TR diagnostic runs once
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-native-wrapper-closure-v18j]
+    paths: [.github/workflows/tr-cancel-obsolete-runs-once.yml]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel duplicate runs and preserve v18H comparison
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          preserve=29725100368
+          for run_id in \
+            29725100394 \
+            29725100372 \
+            29725100388 \
+            29725100395 \
+            29725100408 \
+            29725100319 \
+            29725100342 \
+            29725100323 \
+            29725100322 \
+            29725100348 \
+            29725100352 \
+            29725100363
+          do
+            test "$run_id" != "$preserve"
+            echo "cancel $run_id"
+            gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" || true
+          done

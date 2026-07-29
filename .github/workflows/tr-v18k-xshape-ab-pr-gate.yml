@@ -1,0 +1,307 @@
+name: TR v18K XShape restoration A-B gate
+
+on:
+  pull_request:
+    branches: [tr-wine-compat-proton11-native-wrapper-closure-v18j]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  xshape-ab-gate:
+    if: github.event.pull_request.head.ref == 'tr-wine-compat-proton11-xshape-restore-v18k'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    env:
+      V18H_ARTIFACT_ID: '8436186617'
+      V18J_ARTIFACT_ID: '8442434345'
+      V18H_APK_SHA256: d540254e93452b099621b9deee8de94405f27612b232abb5366dc7a3ff56a9d9
+      V18J_APK_SHA256: 4003bcb0c863519720116d93540e161d640800692c0e002f7e8ac42434e5a215
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM64 A-B tools
+        run: |
+          set -euo pipefail
+          test "$(dpkg --print-architecture)" = arm64
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            curl unzip zstd file binutils xvfb x11-utils imagemagick procps \
+            gcc libx11-dev xserver-xorg-core xserver-xorg-video-dummy
+          python3 -m py_compile tr_winlator_apk/materialize_main_wine_container.py
+
+      - name: Download proven v18H and v18J APKs internally
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          download_artifact() {
+            local id="$1" output="$2" directory="$3"
+            curl --fail --location --retry 3 \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" \
+              -o "$output"
+            mkdir -p "$directory"
+            unzip -q "$output" -d "$directory"
+          }
+          download_artifact "$V18H_ARTIFACT_ID" v18h-artifact.zip v18h-artifact
+          download_artifact "$V18J_ARTIFACT_ID" v18j-artifact.zip v18j-artifact
+
+          HAPK="$(find v18h-artifact -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          JAPK="$(find v18j-artifact -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -n "$HAPK"
+          test -n "$JAPK"
+          echo "$HAPK" > v18h-apk-path.txt
+          echo "$JAPK" > v18j-apk-path.txt
+          printf '%s  %s\n' "$V18H_APK_SHA256" "$HAPK" | sha256sum -c -
+          printf '%s  %s\n' "$V18J_APK_SHA256" "$JAPK" | sha256sum -c -
+
+      - name: Build an internal two-file XShape candidate
+        run: |
+          set -euo pipefail
+          HAPK="$(cat v18h-apk-path.txt)"
+          JAPK="$(cat v18j-apk-path.txt)"
+          mkdir -p h-apk j-apk h-rootfs candidate box64 prefix evidence
+          unzip -q "$HAPK" assets/rootfs.tzst -d h-apk
+          unzip -q "$JAPK" \
+            assets/rootfs.tzst assets/rootfs_patches.tzst \
+            assets/container_pattern.tzst assets/common_dlls.json \
+            assets/box64/box64-0.4.0.tzst -d j-apk
+          tar --use-compress-program=unzstd -xf h-apk/assets/rootfs.tzst -C h-rootfs
+          tar --use-compress-program=unzstd -xf j-apk/assets/rootfs.tzst -C candidate
+          tar --use-compress-program=unzstd -xf j-apk/assets/box64/box64-0.4.0.tzst -C box64
+          tar --use-compress-program=unzstd -xf j-apk/assets/container_pattern.tzst -C prefix
+
+          H64=h-rootfs/opt/wine/lib/wine/x86_64-unix/winex11.so
+          J64=candidate/opt/wine/lib/wine/x86_64-unix/winex11.so
+          H32=h-rootfs/opt/wine/lib/wine/i386-unix/winex11.so
+          J32=candidate/opt/wine/lib/wine/i386-unix/winex11.so
+
+          printf '%s  %s\n' 15d0fccef857a9a6fb96879fe5e6dd5e742473b27adf2a7188c0b06ec14b1b28 "$H64" | sha256sum -c -
+          printf '%s  %s\n' 41f74b52929d5227712f7ea4ef33e2af85b2cd8599271f9153bce74658564f29 "$J64" | sha256sum -c -
+          printf '%s  %s\n' 541d6113b94e77f24a6d3ae0bb48774e24e420737371ed57c2c9b1c0f3ec0174 "$H32" | sha256sum -c -
+          printf '%s  %s\n' 10983a122bcafe0ad73ea4d275849686c87b95024057f0514e2268e2495a2ee6 "$J32" | sha256sum -c -
+
+          cp -f "$H64" "$J64"
+          cp -f "$H32" "$J32"
+
+          printf '%s  %s\n' 15d0fccef857a9a6fb96879fe5e6dd5e742473b27adf2a7188c0b06ec14b1b28 "$J64" | sha256sum -c -
+          printf '%s  %s\n' 541d6113b94e77f24a6d3ae0bb48774e24e420737371ed57c2c9b1c0f3ec0174 "$J32" | sha256sum -c -
+          printf '%s  %s\n' 2a65d3deed782f67daba9d34408376da56c87ea820bad3be4372a9e9aef50770 \
+            candidate/opt/wine/lib/wine/x86_64-unix/nsiproxy.so | sha256sum -c -
+          printf '%s  %s\n' 4bf627033adcdd63280dea023b49f124861d7e99109ac62971b5c10b8b57aac1 \
+            candidate/opt/wine/lib/wine/i386-unix/nsiproxy.so | sha256sum -c -
+          printf '%s  %s\n' 16e8f7ba0f00761e818ee41f8e10b4b7c859948383436ddec5d43207a27c6bd1 \
+            candidate/opt/wine/bin/wine | sha256sum -c -
+          printf '%s  %s\n' 094c046bba4c745105ea7a39cb62e4767162b3c6e2ebd03253fbda4a69265cdb \
+            candidate/opt/wine/bin/wineserver | sha256sum -c -
+          printf '%s  %s\n' 6c7c0a98827c078263c62368920a13d4ca8eed7440f924ccd016369d9445b957 \
+            candidate/opt/wine/lib/wine/x86_64-unix/ntdll.so | sha256sum -c -
+
+          nm -D "$J64" | grep -F 'XShapeCombineRectangles'
+          nm -D "$J32" | grep -F 'XShapeCombineRectangles'
+          readelf -d "$J64" | grep -F 'Shared library: [libXext.so.6]'
+          readelf -d "$J32" | grep -F 'Shared library: [libXext.so.6]'
+          file "$J64" "$J32" | tee xshape-candidate-file-types.txt
+          sha256sum "$J64" "$J32" | tee xshape-candidate-sha256.txt
+
+          python3 tr_winlator_apk/materialize_main_wine_container.py \
+            candidate prefix j-apk/assets/common_dlls.json | tee container-materialization.txt
+          sudo mkdir -p candidate/home/xuser candidate/data/data/com.winlator.trcompat/files
+          sudo cp -a prefix/.wine candidate/home/xuser/.wine
+          sudo tar --use-compress-program=unzstd -xf j-apk/assets/rootfs_patches.tzst -C candidate
+          sudo install -D -m 0755 box64/usr/local/bin/box64 candidate/usr/local/bin/box64
+          sudo chown -R 0:0 candidate/home/xuser/.wine
+          sudo ln -sfn / candidate/data/data/com.winlator.trcompat/files/rootfs
+          sudo mkdir -p candidate/etc candidate/var/lib/dbus candidate/tmp candidate/dev candidate/proc candidate/sys
+          printf '%s\n' 0123456789abcdef0123456789abcdef | sudo tee candidate/etc/machine-id >/dev/null
+          sudo ln -sfn /etc/machine-id candidate/var/lib/dbus/machine-id
+
+          cat > xopen-display.c <<'EOF'
+          #include <X11/Xlib.h>
+          #include <stdio.h>
+          int main(void) {
+              Display *d = XOpenDisplay(NULL);
+              if (!d) { fprintf(stderr, "XOpenDisplay failed for %s\n", XDisplayName(NULL)); return 1; }
+              printf("XOpenDisplay ok display=%s screens=%d\n", DisplayString(d), ScreenCount(d));
+              XCloseDisplay(d);
+              return 0;
+          }
+          EOF
+          gcc -O2 xopen-display.c -lX11 -o xopen-display
+          sudo install -D -m 0755 xopen-display candidate/usr/local/bin/xopen-display
+
+          test -f candidate/home/xuser/.wine/drive_c/windows/winhandler.exe
+          test -f candidate/home/xuser/.wine/drive_c/windows/wfm.exe
+
+      - name: Configure an X server without SHAPE
+        run: |
+          set -euo pipefail
+          cat > xorg-noshape.conf <<'EOF'
+          Section "ServerFlags"
+              Option "AutoAddDevices" "false"
+              Option "DontVTSwitch" "true"
+              Option "AllowMouseOpenFail" "true"
+          EndSection
+          Section "Extensions"
+              Option "SHAPE" "Disable"
+          EndSection
+          Section "Device"
+              Identifier "DummyDevice"
+              Driver "dummy"
+              VideoRam 256000
+          EndSection
+          Section "Monitor"
+              Identifier "DummyMonitor"
+              HorizSync 5.0-1000.0
+              VertRefresh 5.0-200.0
+              Modeline "1280x720" 74.50 1280 1344 1472 1664 720 723 728 748
+          EndSection
+          Section "Screen"
+              Identifier "DummyScreen"
+              Device "DummyDevice"
+              Monitor "DummyMonitor"
+              DefaultDepth 24
+              SubSection "Display"
+                  Depth 24
+                  Modes "1280x720"
+              EndSubSection
+          EndSection
+          Section "ServerLayout"
+              Identifier "DummyLayout"
+              Screen "DummyScreen"
+          EndSection
+          EOF
+
+      - name: Mount isolated candidate rootfs
+        run: |
+          set -euo pipefail
+          sudo mount --rbind /dev candidate/dev
+          sudo mount --make-rslave candidate/dev
+          sudo mount -t proc proc candidate/proc
+          sudo mount --rbind /sys candidate/sys
+          sudo mount --make-rslave candidate/sys
+          sudo mount --bind /tmp candidate/tmp
+
+      - name: Run exact Winlator shell on SHAPE and no-SHAPE servers
+        run: |
+          set -euo pipefail
+
+          stop_runtime() {
+            sudo pkill -KILL box64 2>/dev/null || true
+            sudo pkill -KILL Xvfb 2>/dev/null || true
+            sudo pkill -KILL Xorg 2>/dev/null || true
+          }
+
+          run_case() {
+            local name="$1" display="$2" mode="$3"
+            local out="evidence/$name"
+            mkdir -p "$out"
+            stop_runtime
+
+            if [ "$mode" = shape ]; then
+              Xvfb "$display" -ac -screen 0 1280x720x24 -listen tcp >"$out/xserver.log" 2>&1 &
+            else
+              sudo Xorg "$display" -noreset -ac -listen tcp \
+                -config "$PWD/xorg-noshape.conf" -logfile "$PWD/$out/Xorg.log" \
+                >"$out/xserver.log" 2>&1 &
+            fi
+            local xpid=$!
+            local number="${display#:}"
+            local tcp_display="127.0.0.1:${number}.0"
+            for _ in $(seq 1 40); do
+              xdpyinfo -display "$tcp_display" >/dev/null 2>&1 && break
+              sleep 1
+            done
+            xdpyinfo -display "$tcp_display" >"$out/xdpyinfo.txt"
+            if [ "$mode" = shape ]; then
+              xdpyinfo -display "$tcp_display" | grep -q SHAPE
+            else
+              test "$(xdpyinfo -display "$tcp_display" | grep -c SHAPE || true)" -eq 0
+            fi
+
+            sudo env DISPLAY="$tcp_display" XAUTHORITY=/dev/null \
+              LD_LIBRARY_PATH=/lib:/usr/lib:/usr/lib/aarch64-linux-gnu \
+              /usr/sbin/chroot candidate /usr/local/bin/xopen-display \
+              2>&1 | tee "$out/xopen-display.txt"
+            grep -F 'XOpenDisplay ok' "$out/xopen-display.txt"
+
+            sudo env HOME=/home/xuser USER=xuser DISPLAY="$tcp_display" XAUTHORITY=/dev/null \
+              WINEPREFIX=/home/xuser/.wine WINEDEBUG=warn+all,err+all \
+              WINEESYNC=1 WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER=1 \
+              MESA_DEBUG=silent MESA_NO_ERROR=1 \
+              PATH=/opt/wine/bin:/usr/local/bin:/usr/bin:/bin \
+              LD_LIBRARY_PATH=/lib:/usr/lib:/usr/lib/aarch64-linux-gnu \
+              BOX64_NOBANNER=0 BOX64_LOG=1 BOX64_DYNAREC=1 \
+              BOX64_PATH=/opt/wine/bin:/usr/bin:/bin \
+              BOX64_LD_LIBRARY_PATH=/opt/wine/lib:/usr/lib:/lib \
+              /usr/bin/timeout --signal=TERM 75s \
+              /usr/sbin/chroot candidate /usr/local/bin/box64 /opt/wine/bin/wine \
+              explorer /desktop=shell,1280x720 \
+              'C:\windows\winhandler.exe' /dir 'C:\windows' 'wfm.exe' \
+              >"$out/wine.log" 2>&1 &
+            local runtime_pid=$!
+
+            local alive=0 desktop=0 computer=0 viewable=0
+            for second in 10 20 30 40 50 60; do
+              sleep 10
+              if kill -0 "$runtime_pid" 2>/dev/null; then alive=$((alive + 1)); fi
+              xwininfo -display "$tcp_display" -root -tree >"$out/xwininfo-${second}.txt" 2>&1 || true
+              grep -q 'shell - Wine Desktop' "$out/xwininfo-${second}.txt" && desktop=$((desktop + 1)) || true
+              ID="$(awk '/"Computer"/ {print $1; exit}' "$out/xwininfo-${second}.txt")"
+              if [ -n "$ID" ]; then
+                computer=$((computer + 1))
+                xwininfo -display "$tcp_display" -id "$ID" -all >"$out/computer-${second}.txt" 2>&1 || true
+                grep -Fq 'Map State: IsViewable' "$out/computer-${second}.txt" && viewable=$((viewable + 1)) || true
+                import -display "$tcp_display" -window "$ID" "$out/computer-${second}.png" || true
+              fi
+              import -display "$tcp_display" -window root "$out/root-${second}.png" || true
+            done
+
+            printf 'alive_checks=%s\ndesktop_checks=%s\ncomputer_checks=%s\nviewable_checks=%s\n' \
+              "$alive" "$desktop" "$computer" "$viewable" | tee "$out/result.txt"
+            grep -Ei 'winebus[^\n]*c0000135|service[^\n]*126|RpcSs[^\n]*fail|Initialization of L"winex11.drv" failed|segmentation fault|SIGSEGV' \
+              "$out/wine.log" >"$out/fatal-markers.txt" || true
+
+            kill "$runtime_pid" 2>/dev/null || true
+            wait "$runtime_pid" || true
+            sudo kill "$xpid" 2>/dev/null || true
+            wait "$xpid" || true
+            stop_runtime
+
+            test "$alive" -ge 5
+            test "$desktop" -ge 5
+            test "$computer" -ge 5
+            test "$viewable" -ge 5
+            test ! -s "$out/fatal-markers.txt"
+          }
+
+          run_case shape-advertised :99 shape
+          run_case shape-disabled :100 noshape
+
+      - name: Cleanup candidate mounts
+        if: always()
+        run: |
+          sudo pkill -KILL box64 2>/dev/null || true
+          sudo pkill -KILL Xvfb 2>/dev/null || true
+          sudo pkill -KILL Xorg 2>/dev/null || true
+          sudo umount -l candidate/tmp 2>/dev/null || true
+          sudo umount -l candidate/proc 2>/dev/null || true
+          sudo umount -R -l candidate/sys 2>/dev/null || true
+          sudo umount -R -l candidate/dev 2>/dev/null || true
+
+      - name: Upload XShape A-B evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V18K_INTERNAL_XSHAPE_AB_EVIDENCE
+          path: |
+            evidence/
+            xshape-candidate-file-types.txt
+            xshape-candidate-sha256.txt
+            container-materialization.txt
+            xorg-noshape.conf
+          if-no-files-found: warn

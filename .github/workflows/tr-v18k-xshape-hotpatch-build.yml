@@ -1,0 +1,220 @@
+name: Build TR v18K XShape Termux hotpatch
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-native-wrapper-closure-v18j]
+    paths: [.github/workflows/tr-v18k-xshape-hotpatch-build.yml]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  build-hotpatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      V18H_ARTIFACT_ID: '8436186617'
+      V18H_APK_SHA256: d540254e93452b099621b9deee8de94405f27612b232abb5366dc7a3ff56a9d9
+      WINEX11_64_SHA256: 15d0fccef857a9a6fb96879fe5e6dd5e742473b27adf2a7188c0b06ec14b1b28
+      WINEX11_32_SHA256: 541d6113b94e77f24a6d3ae0bb48774e24e420737371ed57c2c9b1c0f3ec0174
+    steps:
+      - name: Install extraction tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y unzip zstd file binutils
+
+      - name: Download verified v18H APK artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V18H_ARTIFACT_ID}/zip" \
+            -o v18h-artifact.zip
+          mkdir v18h-artifact
+          unzip -q v18h-artifact.zip -d v18h-artifact
+          APK="$(find v18h-artifact -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          printf '%s  %s\n' "$V18H_APK_SHA256" "$APK" | sha256sum -c -
+          echo "APK=$APK" >> "$GITHUB_ENV"
+
+      - name: Extract only the restored XShape modules
+        run: |
+          set -euo pipefail
+          mkdir -p apk rootfs hotpatch/payload/x86_64-unix hotpatch/payload/i386-unix
+          unzip -q "$APK" assets/rootfs.tzst -d apk
+          tar --use-compress-program=unzstd -xf apk/assets/rootfs.tzst -C rootfs
+          cp -f rootfs/opt/wine/lib/wine/x86_64-unix/winex11.so \
+            hotpatch/payload/x86_64-unix/winex11.so
+          cp -f rootfs/opt/wine/lib/wine/i386-unix/winex11.so \
+            hotpatch/payload/i386-unix/winex11.so
+          printf '%s  %s\n' "$WINEX11_64_SHA256" hotpatch/payload/x86_64-unix/winex11.so | sha256sum -c -
+          printf '%s  %s\n' "$WINEX11_32_SHA256" hotpatch/payload/i386-unix/winex11.so | sha256sum -c -
+          file hotpatch/payload/x86_64-unix/winex11.so hotpatch/payload/i386-unix/winex11.so \
+            | tee hotpatch/PAYLOAD_FILE_TYPES.txt
+          nm -D hotpatch/payload/x86_64-unix/winex11.so \
+            | grep -F XShapeCombineRectangles \
+            | tee hotpatch/XSHAPE_SYMBOL_PROOF.txt
+
+      - name: Create guarded Termux apply and restore scripts
+        run: |
+          set -euo pipefail
+          cat > hotpatch/apply_xshape_hotpatch.sh <<'EOF'
+          #!/data/data/com.termux/files/usr/bin/bash
+          set -euo pipefail
+
+          PKG='com.winlator.trcompat'
+          ROOT='files/rootfs'
+          TARGET64="$ROOT/opt/wine/lib/wine/x86_64-unix/winex11.so"
+          TARGET32="$ROOT/opt/wine/lib/wine/i386-unix/winex11.so"
+          BACKUP='files/tr_v18k_xshape_backup'
+          EXPECT_PAYLOAD64='15d0fccef857a9a6fb96879fe5e6dd5e742473b27adf2a7188c0b06ec14b1b28'
+          EXPECT_PAYLOAD32='541d6113b94e77f24a6d3ae0bb48774e24e420737371ed57c2c9b1c0f3ec0174'
+          EXPECT_V18J64='41f74b52929d5227712f7ea4ef33e2af85b2cd8599271f9153bce74658564f29'
+          EXPECT_V18J32='10983a122bcafe0ad73ea4d275849686c87b95024057f0514e2268e2495a2ee6'
+          HERE="$(cd "$(dirname "$0")" && pwd)"
+
+          die() { echo "오류: $*" >&2; exit 1; }
+          app_sha() {
+            run-as "$PKG" sh -c "if command -v sha256sum >/dev/null 2>&1; then sha256sum '$1'; else toybox sha256sum '$1'; fi" \
+              | awk '{print $1}'
+          }
+          install_stream() {
+            local source="$1" target="$2" expected="$3"
+            cat "$source" | run-as "$PKG" sh -c \
+              "umask 022; cat > '${target}.new'; chmod 0755 '${target}.new'; mv -f '${target}.new' '$target'"
+            local actual
+            actual="$(app_sha "$target")"
+            [ "$actual" = "$expected" ] || die "$target 검증 실패: $actual"
+          }
+
+          echo '[1/6] Winlator TR Compat를 최근 앱에서도 완전히 종료했는지 확인해.'
+          echo '      실행 중이면 지금 스크립트를 Ctrl+C로 중단하고 앱을 종료한 뒤 다시 실행해.'
+          sleep 3
+
+          echo '[2/6] run-as 접근 검사'
+          run-as "$PKG" id >/dev/null 2>&1 || die \
+            "이 삼성 펌웨어가 Termux→run-as를 차단했어. 아무 파일도 변경하지 않았어."
+
+          [ -f "$HERE/payload/x86_64-unix/winex11.so" ] || die '64비트 payload 없음'
+          [ -f "$HERE/payload/i386-unix/winex11.so" ] || die '32비트 payload 없음'
+          echo "$EXPECT_PAYLOAD64  $HERE/payload/x86_64-unix/winex11.so" | sha256sum -c -
+          echo "$EXPECT_PAYLOAD32  $HERE/payload/i386-unix/winex11.so" | sha256sum -c -
+
+          echo '[3/6] 현재 설치 파일 확인'
+          current64="$(app_sha "$TARGET64")"
+          current32="$(app_sha "$TARGET32")"
+          echo "현재 64비트: $current64"
+          echo "현재 32비트: $current32"
+          if [ "$current64" = "$EXPECT_PAYLOAD64" ] && [ "$current32" = "$EXPECT_PAYLOAD32" ]; then
+            echo '이미 XShape 복원판이 적용돼 있어.'
+            exit 0
+          fi
+          [ "$current64" = "$EXPECT_V18J64" ] || die '64비트 파일이 알려진 v18J 원본과 다름. 적용 중단.'
+          [ "$current32" = "$EXPECT_V18J32" ] || die '32비트 파일이 알려진 v18J 원본과 다름. 적용 중단.'
+
+          echo '[4/6] v18J 원본 백업'
+          run-as "$PKG" sh -c \
+            "mkdir -p '$BACKUP/x86_64-unix' '$BACKUP/i386-unix'; \
+             test -f '$BACKUP/x86_64-unix/winex11.so' || cp -p '$TARGET64' '$BACKUP/x86_64-unix/winex11.so'; \
+             test -f '$BACKUP/i386-unix/winex11.so' || cp -p '$TARGET32' '$BACKUP/i386-unix/winex11.so'"
+          [ "$(app_sha "$BACKUP/x86_64-unix/winex11.so")" = "$EXPECT_V18J64" ] || die '64비트 백업 검증 실패'
+          [ "$(app_sha "$BACKUP/i386-unix/winex11.so")" = "$EXPECT_V18J32" ] || die '32비트 백업 검증 실패'
+
+          echo '[5/6] XShape 복원 모듈 두 개만 적용'
+          install_stream "$HERE/payload/x86_64-unix/winex11.so" "$TARGET64" "$EXPECT_PAYLOAD64"
+          install_stream "$HERE/payload/i386-unix/winex11.so" "$TARGET32" "$EXPECT_PAYLOAD32"
+
+          echo '[6/6] 완료'
+          echo '변경된 파일은 winex11.so 두 개뿐이야.'
+          echo 'Winlator를 열고 기존 테스트 컨테이너만 실행해. 게임은 아직 실행하지 마.'
+          echo '되돌리기: bash restore_v18j_original.sh'
+          EOF
+
+          cat > hotpatch/restore_v18j_original.sh <<'EOF'
+          #!/data/data/com.termux/files/usr/bin/bash
+          set -euo pipefail
+
+          PKG='com.winlator.trcompat'
+          ROOT='files/rootfs'
+          TARGET64="$ROOT/opt/wine/lib/wine/x86_64-unix/winex11.so"
+          TARGET32="$ROOT/opt/wine/lib/wine/i386-unix/winex11.so"
+          BACKUP='files/tr_v18k_xshape_backup'
+          EXPECT_V18J64='41f74b52929d5227712f7ea4ef33e2af85b2cd8599271f9153bce74658564f29'
+          EXPECT_V18J32='10983a122bcafe0ad73ea4d275849686c87b95024057f0514e2268e2495a2ee6'
+
+          die() { echo "오류: $*" >&2; exit 1; }
+          app_sha() {
+            run-as "$PKG" sh -c "if command -v sha256sum >/dev/null 2>&1; then sha256sum '$1'; else toybox sha256sum '$1'; fi" \
+              | awk '{print $1}'
+          }
+
+          echo 'Winlator TR Compat가 완전히 종료된 상태여야 해.'
+          sleep 3
+          run-as "$PKG" id >/dev/null 2>&1 || die 'run-as 접근 실패. 아무 파일도 변경하지 않았어.'
+          run-as "$PKG" sh -c \
+            "test -f '$BACKUP/x86_64-unix/winex11.so' && test -f '$BACKUP/i386-unix/winex11.so'" \
+            || die '백업 파일 없음'
+          run-as "$PKG" sh -c \
+            "cp -p '$BACKUP/x86_64-unix/winex11.so' '${TARGET64}.new'; chmod 0755 '${TARGET64}.new'; mv -f '${TARGET64}.new' '$TARGET64'; \
+             cp -p '$BACKUP/i386-unix/winex11.so' '${TARGET32}.new'; chmod 0755 '${TARGET32}.new'; mv -f '${TARGET32}.new' '$TARGET32'"
+          [ "$(app_sha "$TARGET64")" = "$EXPECT_V18J64" ] || die '64비트 복원 검증 실패'
+          [ "$(app_sha "$TARGET32")" = "$EXPECT_V18J32" ] || die '32비트 복원 검증 실패'
+          echo 'v18J 원본 winex11.so 두 파일로 복원 완료.'
+          EOF
+
+          cat > hotpatch/README_KO.txt <<'EOF'
+          TR v18K XShape A/B 핫패치
+
+          목적:
+          - v18J의 라이브러리 closure와 NSI 수정은 유지
+          - 64비트/32비트 winex11.so 두 파일만 v18H의 XShape 활성판으로 교체
+          - 전체 APK 재다운로드 없이 물리 기기에서 깜빡임/Explorer 종료를 비교
+
+          적용 전:
+          1. Winlator TR Compat를 최근 앱에서도 완전히 종료
+          2. 이 폴더에서 bash apply_xshape_hotpatch.sh 실행
+
+          복원:
+          - Winlator를 완전히 종료
+          - bash restore_v18j_original.sh 실행
+
+          run-as가 차단되면 스크립트는 파일을 수정하기 전에 종료한다.
+          EOF
+
+          chmod +x hotpatch/apply_xshape_hotpatch.sh hotpatch/restore_v18j_original.sh
+          (
+            cd hotpatch
+            sha256sum \
+              payload/x86_64-unix/winex11.so \
+              payload/i386-unix/winex11.so \
+              apply_xshape_hotpatch.sh \
+              restore_v18j_original.sh \
+              > SHA256SUMS.txt
+          )
+
+      - name: Validate packaged scripts and size
+        run: |
+          set -euo pipefail
+          bash -n hotpatch/apply_xshape_hotpatch.sh
+          bash -n hotpatch/restore_v18j_original.sh
+          test "$(find hotpatch/payload -type f -name winex11.so | wc -l)" -eq 2
+          du -sh hotpatch | tee hotpatch/PACKAGE_SIZE.txt
+          tar -C hotpatch -czf TR_V18K_XSHAPE_TERMUX_HOTPATCH.tar.gz .
+          ls -lh TR_V18K_XSHAPE_TERMUX_HOTPATCH.tar.gz
+          sha256sum TR_V18K_XSHAPE_TERMUX_HOTPATCH.tar.gz \
+            | tee TR_V18K_XSHAPE_TERMUX_HOTPATCH.tar.gz.sha256
+
+      - name: Upload small Termux hotpatch
+        uses: actions/upload-artifact@v4
+        with:
+          name: TR_V18K_XSHAPE_TERMUX_HOTPATCH
+          path: |
+            TR_V18K_XSHAPE_TERMUX_HOTPATCH.tar.gz
+            TR_V18K_XSHAPE_TERMUX_HOTPATCH.tar.gz.sha256
+          if-no-files-found: error

@@ -1,0 +1,46 @@
+name: TR v18K no-SHAPE script matrix
+
+on:
+  pull_request:
+    branches: [tr-wine-compat-proton11-native-wrapper-closure-v18j]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  no-shape-script:
+    if: github.event.pull_request.head.ref == 'tr-wine-compat-proton11-xshape-restore-v18k'
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [v18j-baseline, xshape-restored]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM64 runtime tools
+        run: |
+          set -euo pipefail
+          test "$(dpkg --print-architecture)" = arm64
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            curl unzip zstd file binutils x11-utils imagemagick procps \
+            gcc libx11-dev xserver-xorg-core xserver-xorg-video-dummy
+          python3 -m py_compile tr_winlator_apk/materialize_main_wine_container.py
+          bash -n tr_winlator_apk/run_v18k_noshape_variant.sh
+
+      - name: Run exact no-SHAPE variant
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tr_winlator_apk/run_v18k_noshape_variant.sh '${{ matrix.variant }}'
+
+      - name: Upload variant evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V18K_NOSHAPE_SCRIPT_${{ matrix.variant }}_EVIDENCE
+          path: evidence-${{ matrix.variant }}/
+          if-no-files-found: warn

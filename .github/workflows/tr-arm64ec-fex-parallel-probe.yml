@@ -1,0 +1,105 @@
+# Retriggered after diagnostic-preservation fix.
+name: TR ARM64EC FEX parallel feasibility probe
+
+on:
+  push:
+    branches: [tr-wine-compat-proton11-native-wrapper-closure-v18j]
+    paths: [.github/workflows/tr-arm64ec-fex-parallel-probe.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone pinned Bannerlator reference
+        run: |
+          set -euo pipefail
+          git clone https://github.com/The412Banner/Bannerlator.git bannerlator
+          git -C bannerlator checkout 1b53122c91d32fbfd0237c836ee3b186e53c8a4e
+          test "$(git -C bannerlator rev-parse HEAD)" = 1b53122c91d32fbfd0237c836ee3b186e53c8a4e
+      - name: Prove ARM64EC FEX launch contract
+        run: |
+          set -euo pipefail
+          G=bannerlator/app/src/main/java/com/winlator/star/xenvironment/components/GuestProgramLauncherComponent.java
+          D=bannerlator/app/src/main/java/com/winlator/star/core/DefaultVersion.java
+          grep -n 'wineInfo.isArm64EC()' "$G" | tee arm64ec-contract.txt
+          grep -n 'HODLL.*libwow64fex.dll' "$G" | tee -a arm64ec-contract.txt
+          grep -n 'libarm64ecfex.so\|libwow64fex.so' "$G" | tee -a arm64ec-contract.txt
+          grep -n 'FEXCORE\|DXVK' "$D" | tee -a arm64ec-contract.txt
+          grep -R -n 'aarch64-unix\|arm64ec' bannerlator/app/src/main/java/com/winlator/star/core/WineInfo.java bannerlator/app/src/main/java/com/winlator/star 2>/dev/null | head -200 > arm64ec-references.txt || true
+          grep -R -n 'proton-11\|Proton 11' bannerlator/app/src/main bannerlator/README.md 2>/dev/null | head -200 > proton11-references.txt || true
+      - name: Inventory bundled FEX/ARM64EC assets
+        run: |
+          set -euo pipefail
+          find bannerlator/app/src/main -type f \( -iname '*fex*' -o -iname '*arm64ec*' -o -iname '*proton*11*' \) -print | sort > arm64ec-assets.txt
+          wc -l arm64ec-assets.txt | tee arm64ec-assets-count.txt
+          head -200 arm64ec-assets.txt
+      - name: Upload source report
+        uses: actions/upload-artifact@v4
+        with:
+          name: TR_ARM64EC_FEX_SOURCE_REPORT
+          path: |
+            arm64ec-contract.txt
+            arm64ec-references.txt
+            proton11-references.txt
+            arm64ec-assets.txt
+            arm64ec-assets-count.txt
+          retention-days: 30
+
+  android-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Clone pinned Bannerlator reference
+        run: |
+          set -euo pipefail
+          git clone https://github.com/The412Banner/Bannerlator.git bannerlator
+          git -C bannerlator checkout 1b53122c91d32fbfd0237c836ee3b186e53c8a4e
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Attempt clean reference APK build
+        id: build
+        continue-on-error: true
+        working-directory: bannerlator
+        run: |
+          set +e
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug > ../bannerlator-build.log 2>&1
+          rc=$?
+          echo "$rc" > ../bannerlator-build-rc.txt
+          tail -n 250 ../bannerlator-build.log
+          exit "$rc"
+      - name: Inspect produced APKs
+        if: always()
+        run: |
+          set +e
+          find bannerlator -path '*/build/outputs/apk/*' -type f -name '*.apk' -print | tee bannerlator-apks.txt
+          while read -r apk; do
+            test -f "$apk" || continue
+            sha256sum "$apk"
+            unzip -l "$apk" | grep -Ei 'fex|arm64ec|proton' | head -100 || true
+          done < bannerlator-apks.txt > bannerlator-apk-inspection.txt 2>&1
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TR_ARM64EC_FEX_BUILD_EVIDENCE
+          path: |
+            bannerlator-build.log
+            bannerlator-build-rc.txt
+            bannerlator-apks.txt
+            bannerlator-apk-inspection.txt
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Enforce build result after evidence upload
+        if: always()
+        run: |
+          rc=$(cat bannerlator-build-rc.txt 2>/dev/null || echo 99)
+          test "$rc" -eq 0
