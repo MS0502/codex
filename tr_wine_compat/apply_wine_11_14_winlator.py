@@ -45,6 +45,12 @@ def validate_source(root: Path) -> None:
         "dlls/wow64/security.c": [
             "    case TokenIsAppContainer:  /* ULONG */\n",
         ],
+        "dlls/winex11.drv/window.c": [
+            "    data->managed = is_window_managed( data->hwnd, SWP_NOACTIVATE, FALSE );\n"
+            "    mask = get_window_attributes( data, &attr ) | CWOverrideRedirect;\n"
+            "    attr.override_redirect = !data->managed;\n",
+            "    data->desired_state.rect = data->current_state.rect;\n",
+        ],
     }
     for rel, needles in required.items():
         text = (root / rel).read_text(encoding="utf-8")
@@ -134,6 +140,32 @@ def patch_token_private_namespace(root: Path) -> None:
     )
 
 
+def patch_override_redirect_creation(root: Path) -> None:
+    window = root / "dlls/winex11.drv/window.c"
+    replace_once(
+        window,
+        "    data->managed = is_window_managed( data->hwnd, SWP_NOACTIVATE, FALSE );\n"
+        "    mask = get_window_attributes( data, &attr ) | CWOverrideRedirect;\n"
+        "    attr.override_redirect = !data->managed;\n",
+        "    /*\n"
+        "     * Creating the X window with override-redirect already enabled can\n"
+        "     * leave Winlator's shell child permanently unmapped. Create it as\n"
+        "     * managed first, then decide the unmanaged state after creation.\n"
+        "     * This follows the Wine MR7181 fix for failed window remapping.\n"
+        "     */\n"
+        "    data->managed = TRUE;\n"
+        "    mask = get_window_attributes( data, &attr );\n",
+    )
+    replace_once(
+        window,
+        "    data->desired_state.rect = data->current_state.rect;\n\n"
+        "    x11drv_xinput2_enable( data->display, data->whole_window );",
+        "    data->desired_state.rect = data->current_state.rect;\n\n"
+        "    if (!is_window_managed( data->hwnd, SWP_NOACTIVATE, FALSE )) data->managed = FALSE;\n\n"
+        "    x11drv_xinput2_enable( data->display, data->whole_window );",
+    )
+
+
 def validate_patched(root: Path) -> None:
     checks = {
         "server/request.c": ["%s/.wineserver"],
@@ -144,6 +176,11 @@ def validate_patched(root: Path) -> None:
             "sizeof(DWORD) /* TokenPrivateNameSpace */",
         ],
         "dlls/wow64/security.c": ["case TokenPrivateNameSpace:  /* ULONG */"],
+        "dlls/winex11.drv/window.c": [
+            "This follows the Wine MR7181 fix for failed window remapping.",
+            "data->managed = TRUE;",
+            "if (!is_window_managed( data->hwnd, SWP_NOACTIVATE, FALSE )) data->managed = FALSE;",
+        ],
     }
     for rel, needles in checks.items():
         text = (root / rel).read_text(encoding="utf-8")
@@ -156,6 +193,14 @@ def validate_patched(root: Path) -> None:
     nsi_text = (root / "dlls/nsiproxy.sys/nsi.c").read_text(encoding="utf-8")
     if "#if defined(HAVE_LINUX_RTNETLINK_H) || defined(__APPLE__)" in nsi_text:
         raise RuntimeError("Linux rtnetlink notification path remains enabled")
+
+    window_text = (root / "dlls/winex11.drv/window.c").read_text(encoding="utf-8")
+    old_creation = (
+        "mask = get_window_attributes( data, &attr ) | CWOverrideRedirect;\n"
+        "    attr.override_redirect = !data->managed;"
+    )
+    if old_creation in window_text:
+        raise RuntimeError("override-redirect is still enabled during X window creation")
 
 
 def install_ci_objdump_wrapper() -> None:
@@ -181,6 +226,7 @@ def main() -> int:
     patch_wineserver_paths(root)
     patch_android_nsi(root)
     patch_token_private_namespace(root)
+    patch_override_redirect_creation(root)
     validate_patched(root)
     install_ci_objdump_wrapper()
 
@@ -191,6 +237,7 @@ def main() -> int:
         "server_base=WINEPREFIX/.wineserver",
         "nsi_linux_notification=disabled_without_faking_success",
         "token_private_namespace=desktop_false_for_x64_and_wow64",
+        "x11_create_override_redirect=deferred_after_creation_mr7181",
         "xshape=disabled_at_configure_time",
         "security_bypass=none",
         "",
