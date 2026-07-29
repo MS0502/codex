@@ -227,7 +227,7 @@ def install_ci_wrappers() -> None:
         "replacements = {\n"
         "    'rm -rf /work/wine-build /work/wine-stage /work/native-prefix': 'rm -rf /work/wine-build /work/wine-stage /tmp/native-prefix',\n"
         "    'export WINEPREFIX=/work/native-prefix': 'export WINEPREFIX=/tmp/native-prefix',\n"
-        "    'timeout 90 /work/wine-stage/opt/wine/bin/wineboot -u': 'timeout --signal=TERM --kill-after=10 300 /work/wine-stage/opt/wine/bin/wineboot -u',\n"
+        "    'timeout 90 /work/wine-stage/opt/wine/bin/wineboot -u': 'timeout --signal=TERM --kill-after=10 300 /work/wine-stage/opt/wine/bin/wineboot --init',\n"
         "}\n"
         "for old, new in replacements.items():\n"
         "    count = text.count(old)\n"
@@ -269,6 +269,7 @@ def main() -> int:
         "token_private_namespace=desktop_false_for_x64_and_wow64",
         "x11_create_override_redirect=deferred_after_creation_mr7181",
         "native_ci_prefix=/tmp/native-prefix",
+        "native_ci_wineboot_mode=init",
         "native_ci_wineboot_timeout=300_seconds",
         "xshape=disabled_at_configure_time",
         "security_bypass=none",
