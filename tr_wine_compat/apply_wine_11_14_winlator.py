@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 EXPECTED_HEAD = "1012f3d99507b80d4869eabf0853567660a7ecbb"
+MONITOR_COMPAT_ANCHOR = "'timeout 90 /work/wine-stage/opt/wine/bin/wineboot -u': 'timeout --signal=TERM --kill-after=10 300 /work/wine-stage/opt/wine/bin/wineboot -u'"
 
 
 def replace_once(path: Path, old: str, new: str) -> None:
