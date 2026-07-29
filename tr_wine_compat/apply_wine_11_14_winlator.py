@@ -203,15 +203,38 @@ def validate_patched(root: Path) -> None:
         raise RuntimeError("override-redirect is still enabled during X window creation")
 
 
-def install_ci_objdump_wrapper() -> None:
+def install_ci_wrappers() -> None:
     github_path = os.environ.get("GITHUB_PATH")
     if not github_path:
         return
+
     bindir = Path.cwd() / ".tr-ci-bin"
     bindir.mkdir(exist_ok=True)
-    wrapper = bindir / "x86_64-w64-mingw32-objdump"
-    wrapper.write_text("#!/bin/sh\nexec objdump \"$@\"\n", encoding="utf-8")
-    wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    objdump_wrapper = bindir / "x86_64-w64-mingw32-objdump"
+    objdump_wrapper.write_text("#!/bin/sh\nexec objdump \"$@\"\n", encoding="utf-8")
+    objdump_wrapper.chmod(objdump_wrapper.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    docker_wrapper = bindir / "docker"
+    docker_wrapper.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "if [ \"${1:-}\" = run ] && [ -f build-wine.sh ]; then\n"
+        "  python3 - <<'PY'\n"
+        "from pathlib import Path\n"
+        "path = Path('build-wine.sh')\n"
+        "text = path.read_text(encoding='utf-8')\n"
+        "old = 'export WINEPREFIX=/work/native-prefix'\n"
+        "if text.count(old) != 1:\n"
+        "    raise SystemExit(f'expected one native-prefix anchor, found {text.count(old)}')\n"
+        "path.write_text(text.replace(old, 'export WINEPREFIX=/tmp/native-prefix', 1), encoding='utf-8')\n"
+        "PY\n"
+        "fi\n"
+        "exec /usr/bin/docker \"$@\"\n",
+        encoding="utf-8",
+    )
+    docker_wrapper.chmod(docker_wrapper.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
     with Path(github_path).open("a", encoding="utf-8") as stream:
         stream.write(str(bindir.resolve()) + "\n")
 
@@ -228,7 +251,7 @@ def main() -> int:
     patch_token_private_namespace(root)
     patch_override_redirect_creation(root)
     validate_patched(root)
-    install_ci_objdump_wrapper()
+    install_ci_wrappers()
 
     subprocess.run(["git", "-C", str(root), "diff", "--check"], check=True)
     report = "\n".join([
@@ -238,6 +261,7 @@ def main() -> int:
         "nsi_linux_notification=disabled_without_faking_success",
         "token_private_namespace=desktop_false_for_x64_and_wow64",
         "x11_create_override_redirect=deferred_after_creation_mr7181",
+        "native_ci_prefix=/tmp/native-prefix",
         "xshape=disabled_at_configure_time",
         "security_bypass=none",
         "",
