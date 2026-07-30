@@ -1,0 +1,50 @@
+name: Patch TR Wine 11.14 duplicate x86 probe
+
+on:
+  push:
+    branches: [tr-wine-11-14-talesrunner-v20]
+    paths:
+      - .github/workflows/tr-wine-11-14-v20-x86-reuse-selfpatch-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-duplicate-x86-probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tr-wine-11-14-talesrunner-v20
+          fetch-depth: 0
+
+      - name: Reuse the already-passed x86 readiness result
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/tr-wine-11-14-v20.yml')
+          text = path.read_text(encoding='utf-8')
+          old = '          /work/wine-stage/opt/wine/bin/wine /work/token-private-namespace-x86.exe | tee /work/token-x86.log\n'
+          new = (
+              '          cp /work/native-token-x86-readiness.log /work/token-x86.log\n'
+              '          cat /work/token-x86.log\n'
+          )
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected one duplicate x86 probe anchor, found {count}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          grep -F 'cp /work/native-token-x86-readiness.log /work/token-x86.log' .github/workflows/tr-wine-11-14-v20.yml
+          git diff --check
+
+      - name: Commit and trigger the corrected build
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/workflows/tr-wine-11-14-v20.yml
+          git commit -m 'ci: reuse passed x86 readiness probe evidence'
+          git push origin HEAD:tr-wine-11-14-talesrunner-v20
