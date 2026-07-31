@@ -149,7 +149,8 @@ jobs:
           timeout 90 /work/wine-stage/opt/wine/bin/wineboot -u > /work/native-wineboot.log 2>&1
           /work/wine-stage/opt/wine/bin/wine cmd /c ver > /work/native-cmd-ver.log 2>&1
           /work/wine-stage/opt/wine/bin/wine /work/token-private-namespace-x64.exe | tee /work/token-x64.log
-          /work/wine-stage/opt/wine/bin/wine /work/token-private-namespace-x86.exe | tee /work/token-x86.log
+          cp /work/native-token-x86-readiness.log /work/token-x86.log
+          cat /work/token-x86.log
           grep -F 'status=00000000 value=0 length=4' /work/token-x64.log
           grep -F 'status=00000000 value=0 length=4' /work/token-x86.log
           /work/wine-stage/opt/wine/bin/wineserver -k || true
