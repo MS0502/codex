@@ -8,6 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
 
 jobs:
@@ -32,19 +33,38 @@ jobs:
               '          cp /work/native-token-x86-readiness.log /work/token-x86.log\n'
               '          cat /work/token-x86.log\n'
           )
-          count = text.count(old)
-          if count != 1:
-              raise SystemExit(f'expected one duplicate x86 probe anchor, found {count}')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          old_count = text.count(old)
+          new_count = text.count(new)
+          if old_count == 1 and new_count == 0:
+              path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          elif old_count == 0 and new_count == 1:
+              print('duplicate x86 probe was already removed')
+          else:
+              raise SystemExit(
+                  f'unexpected x86 probe anchors: old={old_count} new={new_count}'
+              )
           PY
           grep -F 'cp /work/native-token-x86-readiness.log /work/token-x86.log' .github/workflows/tr-wine-11-14-v20.yml
           git diff --check
 
-      - name: Commit and trigger the corrected build
+      - name: Commit exact duplicate-probe fix
         run: |
           set -euo pipefail
+          if git diff --quiet -- .github/workflows/tr-wine-11-14-v20.yml; then
+            echo 'Main workflow already contains the corrected evidence reuse.'
+            exit 0
+          fi
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add .github/workflows/tr-wine-11-14-v20.yml
           git commit -m 'ci: reuse passed x86 readiness probe evidence'
           git push origin HEAD:tr-wine-11-14-talesrunner-v20
+
+      - name: Dispatch corrected gated build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run .github/workflows/tr-wine-11-14-v20.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref tr-wine-11-14-talesrunner-v20
