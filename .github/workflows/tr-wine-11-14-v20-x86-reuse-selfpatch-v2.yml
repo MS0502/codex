@@ -5,6 +5,11 @@ on:
     branches: [tr-wine-11-14-talesrunner-v20]
     paths:
       - .github/workflows/tr-wine-11-14-v20-x86-reuse-selfpatch-v2.yml
+  pull_request:
+    branches: [tr-wine-compat-proton11-native-wrapper-closure-v18j]
+    types: [synchronize]
+    paths:
+      - .github/workflows/tr-wine-11-14-v20-x86-reuse-selfpatch-v2.yml
   workflow_dispatch:
 
 permissions:
@@ -13,6 +18,7 @@ permissions:
 
 jobs:
   patch-duplicate-x86-probe:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.ref == 'tr-wine-11-14-talesrunner-v20'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
