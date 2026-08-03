@@ -1,0 +1,17 @@
+# Android/Gradle
+.gradle/
+local.properties
+**/build/
+*.apk
+*.aab
+
+# Diagnostic artifacts
+artifacts/
+*.zip
+*.tar.gz
+*.log
+
+# Secrets
+*.keystore
+*.jks
+secrets.properties
