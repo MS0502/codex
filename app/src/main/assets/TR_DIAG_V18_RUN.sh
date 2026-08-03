@@ -107,7 +107,7 @@ monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
 
 echo
 echo "Winlator에서 다음 BAT를 한 번 실행하세요:"
-echo 'Z:\\sdcard\\Download\\TR_DIAG_V18\\TR_DIAG_V18_WINDOWS.bat'
+echo 'Z:\sdcard\Download\TR_DIAG_V18\TR_DIAG_V18_WINDOWS.bat'
 echo "최대 4분 동안 완료 신호를 기다립니다."
 
 end=$((SECONDS + 240))
@@ -124,6 +124,7 @@ if [ -n "$logcat_pid" ]; then
   wait "$logcat_pid" 2>/dev/null || true
 fi
 
+mkdir -p "$OUT/runtime"
 if [ -d "$RUNTIME" ]; then
   cp -a "$RUNTIME/." "$OUT/runtime/" 2>/dev/null || true
 fi
@@ -133,10 +134,10 @@ find "$OUT" -type f \( -iname '*.txt' -o -iname '*.log' -o -iname '*.csv' \) -pr
 | while IFS= read -r -d '' f; do
     tmp="$f.redacted"
     sed -E \
-      -e 's/(-authkey:)[^[:space:]"'"']+/\1[REDACTED]/gI' \
-      -e 's/(authkey[=:])[A-Za-z0-9._~+\/-]+/\1[REDACTED]/gI' \
-      -e 's/(authorization:[[:space:]]*)(Bearer[[:space:]]+)?[^[:space:]]+/\1[REDACTED]/gI' \
-      -e 's/(token[=:])[A-Za-z0-9._~+\/-]+/\1[REDACTED]/gI' \
+      -e "s/(-authkey:)[^[:space:]\"']+/\\1[REDACTED]/gI" \
+      -e "s/(authkey[=:])[A-Za-z0-9._~+\/-]+/\\1[REDACTED]/gI" \
+      -e "s/(authorization:[[:space:]]*)(Bearer[[:space:]]+)?[^[:space:]]+/\\1[REDACTED]/gI" \
+      -e "s/(token[=:])[A-Za-z0-9._~+\/-]+/\\1[REDACTED]/gI" \
       "$f" > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" || rm -f "$tmp"
   done
 
@@ -148,7 +149,12 @@ find "$OUT" -type f \( -iname '*.txt' -o -iname '*.log' -o -iname '*.csv' \) -pr
 } > "$OUT/summary.txt"
 
 rm -f "$ARCHIVE"
-(cd "$(dirname "$OUT")" && zip -qr "$ARCHIVE" "$(basename "$OUT")")
+if command -v zip >/dev/null 2>&1; then
+  (cd "$(dirname "$OUT")" && zip -qr "$ARCHIVE" "$(basename "$OUT")")
+else
+  echo "ERROR: Termux package 'zip' is required (pkg install zip)."
+  exit 4
+fi
 termux-media-scan "$ARCHIVE" >/dev/null 2>&1 || true
 
 echo
