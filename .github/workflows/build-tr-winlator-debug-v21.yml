@@ -92,10 +92,32 @@ jobs:
               text = strings.read_text(encoding='utf-8')
               text = text.replace('>Winlator<', '>Winlator TR Debug<')
               strings.write_text(text, encoding='utf-8')
+
+          # The pinned upstream 11.1 source declares and calls IntArray_indexOf,
+          # but omits its implementation, causing libgladiorenderer.so to fail
+          # at link time. Supply the ordinary linear-search implementation.
+          arrays = Path('app/src/main/cpp/winlator/src/arrays.c')
+          text = arrays.read_text(encoding='utf-8')
+          if 'int IntArray_indexOf(IntArray* intArray, int value) {' not in text:
+              marker = 'void IntArray_add(IntArray* intArray, int value) {'
+              implementation = '''int IntArray_indexOf(IntArray* intArray, int value) {
+    if (!intArray) return -1;
+    for (int i = 0; i < intArray->size; i++) {
+        if (intArray->values[i] == value) return i;
+    }
+    return -1;
+}
+
+'''
+              if marker not in text:
+                  raise SystemExit('IntArray insertion marker not found')
+              text = text.replace(marker, implementation + marker, 1)
+              arrays.write_text(text, encoding='utf-8')
           PY
 
           grep -nE 'applicationId|versionCode|versionName|debuggable|minifyEnabled' app/build.gradle
           grep -n 'android:authorities' app/src/main/AndroidManifest.xml
+          grep -n 'int IntArray_indexOf' app/src/main/cpp/winlator/src/arrays.c
 
       - name: Build debug APK
         working-directory: winlator
