@@ -1,0 +1,132 @@
+name: Build TR Winlator Debug v21
+
+on:
+  push:
+    branches:
+      - tr-winlator-debug-v21
+    paths:
+      - '.github/workflows/build-tr-winlator-debug-v21.yml'
+      - 'docs/TR_WINLATOR_DEBUG_V21.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      WINLATOR_REPO: brunodev85/winlator-app
+      WINLATOR_REF: ca3d735a60d653a787daf16d14fafef28d9c2c23
+      DEBUG_APPLICATION_ID: com.winlator.trdiag
+
+    steps:
+      - name: Checkout harness
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned Winlator source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WINLATOR_REPO }}
+          ref: ${{ env.WINLATOR_REF }}
+          path: winlator
+          fetch-depth: 1
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build components
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager \
+            'platforms;android-34' \
+            'build-tools;34.0.0' \
+            'ndk;24.0.8215888' \
+            'cmake;3.22.1'
+
+      - name: Patch a separately installable debuggable build
+        working-directory: winlator
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          gradle = Path('app/build.gradle')
+          text = gradle.read_text(encoding='utf-8')
+          text = text.replace("applicationId 'com.winlator'", "applicationId 'com.winlator.trdiag'")
+          text = text.replace('versionCode 28', 'versionCode 211')
+          text = text.replace('versionName "11.1"', 'versionName "11.1-trdiag-v21"')
+          text = text.replace(
+              "debug {\n            minifyEnabled true",
+              "debug {\n            debuggable true\n            minifyEnabled false",
+          )
+          gradle.write_text(text, encoding='utf-8')
+
+          manifest = Path('app/src/main/AndroidManifest.xml')
+          text = manifest.read_text(encoding='utf-8')
+          text = text.replace(
+              'android:authorities="com.winlator.FileProvider"',
+              'android:authorities="com.winlator.trdiag.FileProvider"',
+          )
+          manifest.write_text(text, encoding='utf-8')
+
+          strings = Path('app/src/main/res/values/strings.xml')
+          if strings.exists():
+              text = strings.read_text(encoding='utf-8')
+              text = text.replace('>Winlator<', '>Winlator TR Debug<')
+              strings.write_text(text, encoding='utf-8')
+          PY
+
+          grep -nE 'applicationId|versionCode|versionName|debuggable|minifyEnabled' app/build.gradle
+          grep -n 'android:authorities' app/src/main/AndroidManifest.xml
+
+      - name: Build debug APK
+        working-directory: winlator
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleDebug --stacktrace
+
+      - name: Verify package and debuggable flag
+        working-directory: winlator
+        run: |
+          APK='app/build/outputs/apk/debug/app-debug.apk'
+          test -f "$APK"
+          AAPT="$ANDROID_HOME/build-tools/34.0.0/aapt"
+          "$AAPT" dump badging "$APK" | tee app/build/outputs/apk/debug/package.txt
+          "$AAPT" dump xmltree "$APK" AndroidManifest.xml | tee app/build/outputs/apk/debug/manifest.txt
+          grep -q "package: name='com.winlator.trdiag'" app/build/outputs/apk/debug/package.txt
+          grep -q 'A: android:debuggable(0x0101000f)=(type 0x12)0xffffffff' app/build/outputs/apk/debug/manifest.txt
+
+      - name: Record provenance and SHA-256
+        working-directory: winlator
+        run: |
+          OUT='app/build/outputs/apk/debug'
+          APK="$OUT/app-debug.apk"
+          sha256sum "$APK" | tee "$OUT/app-debug.apk.sha256"
+          {
+            echo "source_repository=$WINLATOR_REPO"
+            echo "source_commit=$WINLATOR_REF"
+            echo "application_id=$DEBUG_APPLICATION_ID"
+            echo "purpose=compatibility diagnostics only"
+            echo "debuggable=true"
+          } | tee "$OUT/provenance.txt"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: TR-Winlator-Debug-v21
+          path: |
+            winlator/app/build/outputs/apk/debug/app-debug.apk
+            winlator/app/build/outputs/apk/debug/app-debug.apk.sha256
+            winlator/app/build/outputs/apk/debug/package.txt
+            winlator/app/build/outputs/apk/debug/manifest.txt
+            winlator/app/build/outputs/apk/debug/provenance.txt
+          if-no-files-found: error
+          retention-days: 14
