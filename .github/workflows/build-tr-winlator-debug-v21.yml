@@ -38,7 +38,7 @@ jobs:
           path: winlator
           fetch-depth: 1
 
-      - name: Set up Java 17
+      - name: Set up Java 17 for Android SDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -55,6 +55,12 @@ jobs:
             'build-tools;34.0.0' \
             'ndk;24.0.8215888' \
             'cmake;3.22.1'
+
+      - name: Set up Java 11 for Winlator Gradle build
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
 
       - name: Patch a separately installable debuggable build
         working-directory: winlator
@@ -93,9 +99,11 @@ jobs:
 
       - name: Build debug APK
         working-directory: winlator
+        shell: bash
         run: |
+          set -o pipefail
           chmod +x gradlew
-          ./gradlew --no-daemon :app:assembleDebug --stacktrace
+          ./gradlew --no-daemon :app:assembleDebug --stacktrace 2>&1 | tee ../gradle-build.log
 
       - name: Verify package and debuggable flag
         working-directory: winlator
@@ -133,4 +141,13 @@ jobs:
             winlator/app/build/outputs/apk/debug/manifest.txt
             winlator/app/build/outputs/apk/debug/provenance.txt
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Gradle diagnostic log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TR-Winlator-Debug-v21-build-log
+          path: gradle-build.log
+          if-no-files-found: warn
           retention-days: 14
