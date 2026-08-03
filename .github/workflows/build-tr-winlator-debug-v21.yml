@@ -7,6 +7,10 @@ on:
     paths:
       - '.github/workflows/build-tr-winlator-debug-v21.yml'
       - 'docs/TR_WINLATOR_DEBUG_V21.md'
+  pull_request:
+    paths:
+      - '.github/workflows/build-tr-winlator-debug-v21.yml'
+      - 'docs/TR_WINLATOR_DEBUG_V21.md'
   workflow_dispatch:
 
 permissions:
