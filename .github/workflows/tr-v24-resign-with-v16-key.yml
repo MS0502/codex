@@ -1,0 +1,96 @@
+name: Re-sign TR v24 with exact v16 key
+
+on:
+  push:
+    branches: [tr-wine-compat-lifetime-v16]
+    paths:
+      - ".github/workflows/tr-v24-resign-with-v16-key.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  resign-v24:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Download exact verified v24 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V24_FORENSIC
+          path: input-v24
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: MS0502/codex
+          run-id: 30909221403
+
+      - name: Verify exact unsigned-input identity
+        run: |
+          set -euo pipefail
+          APK=input-v24/Winlator_11.1_TR_Compat_v24_FORENSIC.apk
+          test -s "$APK"
+          echo 'b5acda8fa28cf022c2698242f3e5df95b26805c9fc0fe5113a0ff95e2ddab078  input-v24/Winlator_11.1_TR_Compat_v24_FORENSIC.apk' | sha256sum -c -
+
+      - name: Restore exact persistent v16 signing key
+        id: v16-key
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: trcompat-debug-keystore-v1
+
+      - name: Fail closed if v16 private key is unavailable
+        if: steps.v16-key.outputs.cache-hit != 'true'
+        run: |
+          echo 'Exact v16 private signing key cache is unavailable. Refusing to generate a replacement key.' >&2
+          exit 1
+
+      - name: Locate Android signing tools
+        run: |
+          set -euo pipefail
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -n 1)"
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+          echo "APKSIGNER=$APKSIGNER" >> "$GITHUB_ENV"
+          echo "AAPT=$AAPT" >> "$GITHUB_ENV"
+
+      - name: Re-sign with exact v16 key
+        run: |
+          set -euo pipefail
+          mkdir -p out-v24-v16-signer
+          "$APKSIGNER" sign \
+            --ks "$HOME/.android/debug.keystore" \
+            --ks-key-alias androiddebugkey \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --out out-v24-v16-signer/Winlator_11.1_TR_Compat_v24_FORENSIC_V16_SIGNER.apk \
+            input-v24/Winlator_11.1_TR_Compat_v24_FORENSIC.apk
+
+      - name: Verify package, debuggable flag, and exact v16 certificate
+        run: |
+          set -euo pipefail
+          APK=out-v24-v16-signer/Winlator_11.1_TR_Compat_v24_FORENSIC_V16_SIGNER.apk
+          "$AAPT" dump badging "$APK" | tee out-v24-v16-signer/APK_BADGING.txt
+          grep "package: name='com.winlator.trcompat'" out-v24-v16-signer/APK_BADGING.txt
+          grep "versionName='11.1-trcompat24-forensic'" out-v24-v16-signer/APK_BADGING.txt
+          "$AAPT" dump xmltree "$APK" AndroidManifest.xml | tee out-v24-v16-signer/APK_MANIFEST.txt
+          grep -A2 -B2 'android:debuggable' out-v24-v16-signer/APK_MANIFEST.txt
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee out-v24-v16-signer/APK_SIGNING.txt
+          grep -i 'Signer #1 certificate SHA-256 digest: cbe040f0887f8ffb4444b5b62b81f06118a3a9fec608f3c7f6ba7c62824b23ff' out-v24-v16-signer/APK_SIGNING.txt
+          sha256sum "$APK" | tee out-v24-v16-signer/SHA256SUMS.txt
+          cp input-v24/README_KO.txt out-v24-v16-signer/README_KO.txt
+          printf '%s\n' \
+            'Signer continuity:' \
+            'v16 certificate SHA-256 = cbe040f0887f8ffb4444b5b62b81f06118a3a9fec608f3c7f6ba7c62824b23ff' \
+            'v24 certificate SHA-256 = cbe040f0887f8ffb4444b5b62b81f06118a3a9fec608f3c7f6ba7c62824b23ff' \
+            > out-v24-v16-signer/SIGNER_CONTINUITY.txt
+
+      - name: Upload update-compatible APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V24_FORENSIC_V16_SIGNER
+          path: out-v24-v16-signer/*
+          if-no-files-found: error
+          retention-days: 30
