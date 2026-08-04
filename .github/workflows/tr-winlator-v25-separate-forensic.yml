@@ -1,0 +1,272 @@
+name: TR Winlator v25 separate forensic diagnostics
+
+on:
+  push:
+    branches: [tr-winlator-forensic-v25-separate]
+  pull_request:
+    branches: [tr-winlator-forensic-v24]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tr-winlator-v25-separate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-v25-separate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            python3 git git-lfs ca-certificates unzip zstd patchelf file
+          python3 -m py_compile tr_winlator_apk/apply_v24_patch.py
+          python3 -m py_compile tr_winlator_apk/apply_v25_patch.py
+
+      - name: Set up Java 17 for sdkmanager
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK components
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platforms;android-34' 'build-tools;34.0.0' \
+            'cmake;3.22.1' 'ndk;24.0.8215888'
+
+      - name: Set up Java 11 for Android Gradle Plugin
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Prepare exact Winlator source and official Wine components
+        run: |
+          set -euo pipefail
+          git init winlator-app
+          git -C winlator-app remote add origin https://github.com/brunodev85/winlator-app.git
+          git -C winlator-app fetch --depth 1 origin c2f4ad4534f4637b543a9a3b085e28f50cf6d01c
+          git -C winlator-app checkout --detach FETCH_HEAD
+          test "$(git -C winlator-app rev-parse HEAD)" = c2f4ad4534f4637b543a9a3b085e28f50cf6d01c
+          git -C winlator-app lfs pull
+
+          ROOTFS=winlator-app/app/src/main/assets/rootfs.tzst
+          test -s "$ROOTFS"
+          sha256sum "$ROOTFS" | tee rootfs-source-sha256.txt
+          mkdir -p wine-components-v25
+          tar --use-compress-program=unzstd -xOf "$ROOTFS" ./opt/wine/lib/wine/x86_64-unix/ntdll.so > wine-components-v25/ntdll.so
+          tar --use-compress-program=unzstd -xOf "$ROOTFS" ./opt/wine/lib/wine/x86_64-windows/wow64.dll > wine-components-v25/wow64.dll
+          tar --use-compress-program=unzstd -xOf "$ROOTFS" ./opt/wine/bin/wineserver > wine-components-v25/wineserver
+          tar --use-compress-program=unzstd -xOf "$ROOTFS" ./opt/wine/lib/wine/x86_64-unix/nsiproxy.so > wine-components-v25/nsiproxy.so
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          root = Path("wine-components-v25")
+          old = b"/data/data/com.winlator/files/rootfs"
+          alias = b"/data/user/0/com.winlator.trcompat/r"
+          source = {
+              "ntdll.so": "39f254917b939051ab32fe2df6357acc47b22b39e0c62dce4766e052286bdb0f",
+              "wow64.dll": "2fbdc987de14bf15aa56ac2c3f9f4e4a2034905cc0812ea5d5b83005a69965df",
+              "wineserver": "f91a57493829473f3c08dc4f8976a47646b7df736c352c0359e26f2c1cb9784f",
+              "nsiproxy.so": "bac106d309fd86b3a64b6d55c8b115d618b1629204dd56731e5616401b3e6aad",
+          }
+          final = {
+              "ntdll.so": "d24a6f8c3fcadfb8fda16002dac47ca71304eccc702453c4424c4cfb859cdfad",
+              "wow64.dll": "2fbdc987de14bf15aa56ac2c3f9f4e4a2034905cc0812ea5d5b83005a69965df",
+              "wineserver": "ea66ec3d956bea4b1c4e880352a655dad6036186b3645dc02cd11062386a13cc",
+              "nsiproxy.so": "f747f50334ac75b26d60485ff6ed707d4b310456495374c2b43d219378ac2787",
+          }
+          report = []
+          for name in source:
+              path = root / name
+              data = path.read_bytes()
+              before = hashlib.sha256(data).hexdigest()
+              if before != source[name]:
+                  raise SystemExit(f"{name}: unexpected source hash {before}")
+              count = data.count(old)
+              data = data.replace(old, alias)
+              path.write_bytes(data)
+              after = hashlib.sha256(data).hexdigest()
+              if after != final[name]:
+                  raise SystemExit(f"{name}: unexpected temporary trcompat hash {after}")
+              report.append(f"{name} source={before} alias_occurrences={count} temporary={after}")
+          (root / "COMPONENT_REPORT.txt").write_text("\n".join(report) + "\n", encoding="utf-8")
+          print("\n".join(report))
+          PY
+
+          chmod 755 wine-components-v25/ntdll.so wine-components-v25/wineserver wine-components-v25/nsiproxy.so
+
+      - name: Apply v16, v24 and separate-package v25 patches
+        run: |
+          set -o pipefail
+          python3 tr_winlator_apk/apply_v25_patch.py winlator-app wine-components-v25 \
+            2>&1 | tee v25-apply.log
+
+          grep -R "applicationId 'com.winlator.trforens'" -n winlator-app/app/build.gradle
+          grep -R 'versionName "11.1-trforens25-forensic"' -n winlator-app/app/build.gradle
+          grep -R 'android:authorities="com.winlator.trforens.FileProvider"' -n winlator-app/app/src/main/AndroidManifest.xml
+          grep -R 'android:debuggable="true"' -n winlator-app/app/src/main/AndroidManifest.xml
+          grep -R 'Winlator TR Forensic' -n winlator-app/app/src/main/res/values/strings.xml
+          grep -R 'TR_DIAG_v25_FORENSIC.zip' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatDiagnostics.java
+          grep -R 'v25-separate-forensic-1' -n winlator-app/app/src/main/java/com/winlator/core/TrCompatWinePatcher.java
+          grep '^old_package=com.winlator.trcompat$' winlator-app/v25-package-relocation-report.txt
+          grep '^new_package=com.winlator.trforens$' winlator-app/v25-package-relocation-report.txt
+          grep '^rootfs_patched_files=165$' winlator-app/v25-package-relocation-report.txt
+          grep '^rootfs_occurrences=447$' winlator-app/v25-package-relocation-report.txt
+          grep '^box64_patched_files=1$' winlator-app/v25-package-relocation-report.txt
+          grep '^box64_occurrences=1$' winlator-app/v25-package-relocation-report.txt
+
+          git -C winlator-app add -N .
+          git -C winlator-app diff --binary > v25-generated.patch
+          git -C winlator-app diff --name-only | sort > v25-changed-files.txt
+
+      - name: Verify package isolation and diagnostic-only boundary
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          changed = set(Path("v25-changed-files.txt").read_text().splitlines())
+          required = {
+              "app/build.gradle",
+              "app/src/main/AndroidManifest.xml",
+              "app/src/main/assets/rootfs.tzst",
+              "app/src/main/java/com/winlator/XServerDisplayActivity.java",
+              "app/src/main/java/com/winlator/core/ProcessHelper.java",
+              "app/src/main/java/com/winlator/core/TrCompatDiagnostics.java",
+              "app/src/main/java/com/winlator/core/TrCompatWinePatcher.java",
+              "app/src/main/java/com/winlator/xenvironment/components/GuestProgramLauncherComponent.java",
+              "app/src/main/res/values/strings.xml",
+          }
+          missing = required - changed
+          if missing:
+              raise SystemExit(f"missing required generated changes: {sorted(missing)}")
+
+          forbidden_suffixes = (".xem", "xhunter1.sys", "trgame.exe", "talesrunner.exe")
+          forbidden = [path for path in changed if path.lower().endswith(forbidden_suffixes)]
+          if forbidden:
+              raise SystemExit(f"protected/game files changed: {forbidden}")
+
+          for path in Path("winlator-app/app").rglob("*"):
+              if not path.is_file() or path.suffix.lower() in {".tzst", ".zip", ".apk", ".idsig"}:
+                  continue
+              if b"com.winlator.trcompat" in path.read_bytes():
+                  raise SystemExit(f"old package remains in {path}")
+          PY
+
+      - name: Restore persistent v25 signing key
+        id: v25-key
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: trforens-debug-keystore-v1
+
+      - name: Create first v25 signing key
+        if: steps.v25-key.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair -keystore "$HOME/.android/debug.keystore" \
+            -storepass android -alias androiddebugkey -keypass android \
+            -dname 'CN=TR Forensic Debug,O=MS0502,C=KR' -keyalg RSA -keysize 2048 \
+            -validity 10000 -noprompt
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Build APK
+        working-directory: winlator-app
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug \
+            2>&1 | tee ../apk-build-v25.log
+
+      - name: Verify final APK
+        run: |
+          set -euo pipefail
+          APK=winlator-app/app/build/outputs/apk/debug/app-debug.apk
+          AAPT="$ANDROID_HOME/build-tools/34.0.0/aapt"
+          APKSIGNER="$ANDROID_HOME/build-tools/34.0.0/apksigner"
+          test -s "$APK"
+          "$AAPT" dump badging "$APK" | tee apk-badging-v25.txt
+          grep "package: name='com.winlator.trforens'" apk-badging-v25.txt
+          grep "versionName='11.1-trforens25-forensic'" apk-badging-v25.txt
+          grep "application-label:'Winlator TR Forensic'" apk-badging-v25.txt
+          "$AAPT" dump xmltree "$APK" AndroidManifest.xml | tee apk-manifest-v25.txt
+          grep -A2 -B2 'android:debuggable' apk-manifest-v25.txt
+          grep 'com.winlator.trforens.FileProvider' apk-manifest-v25.txt
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee apk-signing-v25.txt
+          grep 'Verified' apk-signing-v25.txt
+
+      - name: Collect APK and evidence
+        run: |
+          set -euo pipefail
+          mkdir -p out-v25
+          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk \
+            out-v25/Winlator_TR_Forensic_v25.apk
+          sha256sum out-v25/Winlator_TR_Forensic_v25.apk | tee out-v25/SHA256SUMS.txt
+          cp winlator-app/v25-package-relocation-report.txt out-v25/
+          cp v25-changed-files.txt out-v25/
+          cp apk-signing-v25.txt out-v25/
+          cat > out-v25/README_KO.txt <<'EOF'
+          Winlator TR Forensic v25
+
+          패키지: com.winlator.trforens
+          기존 com.winlator.trcompat 및 공식 com.winlator와 별도 설치된다.
+          기존 앱, 컨테이너, 게임 폴더를 삭제하거나 수정하지 않는다.
+
+          기준선:
+          - Winlator 11.1 exact source
+          - v12 공식 Wine 10.10
+          - v16 프로세스 수명 진단
+          - v24 현재 게임 빌드 포렌식 진단
+
+          수집 결과:
+          /storage/emulated/0/Documents/Winlator/TR_DIAG_v25_FORENSIC.zip
+
+          게임·인증·XIGNCODE·.xem·xhunter 장치/드라이버·서비스·IOCTL
+          결과를 변경하거나 성공으로 위조하지 않는다.
+          EOF
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_TR_FORENSIC_V25_BUILD_LOG
+          path: |
+            apk-build-v25.log
+            v25-apply.log
+            winlator-app/v25-package-relocation-report.txt
+            rootfs-source-sha256.txt
+            wine-components-v25/COMPONENT_REPORT.txt
+            v25-generated.patch
+            v25-changed-files.txt
+            apk-badging-v25.txt
+            apk-manifest-v25.txt
+            apk-signing-v25.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload separately installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_TR_FORENSIC_V25_APK
+          path: out-v25/*
+          if-no-files-found: error
+          retention-days: 30
