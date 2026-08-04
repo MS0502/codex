@@ -52,6 +52,7 @@ jobs:
           python tr_gamenative/apply_phase1.py \
             --source-root gamenative \
             --report out/phase1_patch_report.json
+          git -C gamenative add -N .
           git -C gamenative diff --binary > out/gamenative-phase1.patch
           git -C gamenative diff --name-only | sort > out/changed-files.txt
 
