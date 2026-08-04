@@ -1,0 +1,65 @@
+name: Patch TR Wine 11.14 x86 evidence reuse
+
+on:
+  push:
+    branches: [tr-wine-11-14-talesrunner-v20]
+    paths:
+      - .github/workflows/tr-wine-11-14-v20-x86-evidence-selfpatch.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-x86-evidence-reuse:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tr-wine-11-14-talesrunner-v20
+          fetch-depth: 0
+
+      - name: Reuse the already successful WoW64 readiness probe
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tr_wine_compat/apply_wine_11_14_winlator.py')
+          text = path.read_text(encoding='utf-8')
+          marker = "native-token-x86-readiness.log /work/token-x86.log"
+          if marker in text:
+              raise SystemExit('x86 evidence reuse already present')
+
+          lines = text.splitlines(keepends=True)
+          matches = [i for i, line in enumerate(lines) if "'timeout 90 /work/wine-stage/opt/wine/bin/wineboot -u':" in line]
+          if len(matches) != 1:
+              raise SystemExit(f'expected one wineboot replacement anchor, found {len(matches)}')
+
+          insertion = (
+              '        "    \'/work/wine-stage/opt/wine/bin/wine /work/token-private-namespace-x86.exe | tee /work/token-x86.log\': '
+              '\'cp /work/native-token-x86-readiness.log /work/token-x86.log && cat /work/token-x86.log\',\\n"\n'
+          )
+          lines.insert(matches[0] + 1, insertion)
+          text = ''.join(lines)
+
+          old_report = '        "native_ci_wineboot_mode=readiness_gated_init_x86_keepalive",\n'
+          new_report = '        "native_ci_wineboot_mode=readiness_gated_init_x86_evidence_reuse",\n'
+          if text.count(old_report) != 1:
+              raise SystemExit('native CI mode report anchor missing or duplicated')
+          text = text.replace(old_report, new_report, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          python3 -m py_compile tr_wine_compat/apply_wine_11_14_winlator.py
+          grep -F "native-token-x86-readiness.log /work/token-x86.log" tr_wine_compat/apply_wine_11_14_winlator.py
+          git diff --check
+
+      - name: Commit exact CI harness fix
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tr_wine_compat/apply_wine_11_14_winlator.py
+          git commit -m 'ci: reuse successful WoW64 readiness evidence'
+          git push origin HEAD:tr-wine-11-14-talesrunner-v20

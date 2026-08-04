@@ -1,0 +1,134 @@
+name: Re-sign TR v24 with exact v18J key
+
+on:
+  push:
+    branches: [tr-wine-11-14-talesrunner-v20]
+    paths:
+      - ".github/workflows/tr-v24-resign-with-v18j-key.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  resign-v24:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out v20 branch for durable status
+        uses: actions/checkout@v4
+        with:
+          ref: tr-wine-11-14-talesrunner-v20
+
+      - name: Download exact verified v24 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V24_FORENSIC
+          path: input-v24
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: MS0502/codex
+          run-id: 30909221403
+
+      - name: Verify exact v24 input identity
+        run: |
+          set -euo pipefail
+          APK=input-v24/Winlator_11.1_TR_Compat_v24_FORENSIC.apk
+          test -s "$APK"
+          echo 'b5acda8fa28cf022c2698242f3e5df95b26805c9fc0fe5113a0ff95e2ddab078  input-v24/Winlator_11.1_TR_Compat_v24_FORENSIC.apk' | sha256sum -c -
+
+      - name: Restore historical TR Compat signing key
+        id: historical-key
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: trcompat-debug-keystore-v1
+
+      - name: Fail closed if historical private key is unavailable
+        if: steps.historical-key.outputs.cache-hit != 'true'
+        run: |
+          echo 'Historical v18J private signing key cache is unavailable. Refusing to generate a replacement key.' >&2
+          exit 1
+
+      - name: Locate Android signing tools
+        run: |
+          set -euo pipefail
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -n 1)"
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+          echo "APKSIGNER=$APKSIGNER" >> "$GITHUB_ENV"
+          echo "AAPT=$AAPT" >> "$GITHUB_ENV"
+
+      - name: Re-sign with historical key
+        run: |
+          set -euo pipefail
+          mkdir -p out-v24-v18j-signer
+          "$APKSIGNER" sign \
+            --ks "$HOME/.android/debug.keystore" \
+            --ks-key-alias androiddebugkey \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --out out-v24-v18j-signer/Winlator_11.1_TR_Compat_v24_FORENSIC_V18J_SIGNER.apk \
+            input-v24/Winlator_11.1_TR_Compat_v24_FORENSIC.apk
+
+      - name: Verify package, debuggable flag, and exact v18J certificate
+        run: |
+          set -euo pipefail
+          APK=out-v24-v18j-signer/Winlator_11.1_TR_Compat_v24_FORENSIC_V18J_SIGNER.apk
+          "$AAPT" dump badging "$APK" | tee out-v24-v18j-signer/APK_BADGING.txt
+          grep "package: name='com.winlator.trcompat'" out-v24-v18j-signer/APK_BADGING.txt
+          grep "versionName='11.1-trcompat24-forensic'" out-v24-v18j-signer/APK_BADGING.txt
+          "$AAPT" dump xmltree "$APK" AndroidManifest.xml | tee out-v24-v18j-signer/APK_MANIFEST.txt
+          grep -A2 -B2 'android:debuggable' out-v24-v18j-signer/APK_MANIFEST.txt
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee out-v24-v18j-signer/APK_SIGNING.txt
+          grep -i 'Signer #1 certificate SHA-256 digest: b1415e30db15f08fc610a8574bbaa6122c3e6dbb093a7cb368e7b5e81e82eebb' out-v24-v18j-signer/APK_SIGNING.txt
+          sha256sum "$APK" | tee out-v24-v18j-signer/SHA256SUMS.txt
+          cp input-v24/README_KO.txt out-v24-v18j-signer/README_KO.txt
+          printf '%s\n' \
+            'Signer continuity:' \
+            'v18J certificate SHA-256 = b1415e30db15f08fc610a8574bbaa6122c3e6dbb093a7cb368e7b5e81e82eebb' \
+            'v24 certificate SHA-256 = b1415e30db15f08fc610a8574bbaa6122c3e6dbb093a7cb368e7b5e81e82eebb' \
+            > out-v24-v18j-signer/SIGNER_CONTINUITY.txt
+
+      - name: Upload v18J-update-compatible APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_11_1_TR_COMPAT_APK_V24_FORENSIC_V18J_SIGNER
+          path: out-v24-v18j-signer/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Persist signer gate status
+        if: always()
+        env:
+          CACHE_HIT: ${{ steps.historical-key.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          mkdir -p docs
+          STATUS=FAILED
+          APK_SHA256=none
+          if [ "$CACHE_HIT" != 'true' ]; then
+            STATUS=KEY_MISSING
+          elif [ -f out-v24-v18j-signer/Winlator_11.1_TR_Compat_v24_FORENSIC_V18J_SIGNER.apk ]; then
+            STATUS=SUCCESS
+            APK_SHA256="$(sha256sum out-v24-v18j-signer/Winlator_11.1_TR_Compat_v24_FORENSIC_V18J_SIGNER.apk | awk '{print $1}')"
+          fi
+          cat > docs/TR_V24_V18J_SIGNER_GATE_STATUS.txt <<EOF
+          status=$STATUS
+          source_v24_run=30909221403
+          source_v24_sha256=b5acda8fa28cf022c2698242f3e5df95b26805c9fc0fe5113a0ff95e2ddab078
+          expected_v18j_certificate_sha256=b1415e30db15f08fc610a8574bbaa6122c3e6dbb093a7cb368e7b5e81e82eebb
+          final_apk_sha256=$APK_SHA256
+          run_id=$GITHUB_RUN_ID
+          run_attempt=$GITHUB_RUN_ATTEMPT
+          EOF
+          sed -i 's/^          //' docs/TR_V24_V18J_SIGNER_GATE_STATUS.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/TR_V24_V18J_SIGNER_GATE_STATUS.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "Record v24 v18J signer gate status"
+            git push origin HEAD:tr-wine-11-14-talesrunner-v20
+          fi

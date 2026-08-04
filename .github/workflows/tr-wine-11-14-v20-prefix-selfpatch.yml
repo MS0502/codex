@@ -1,0 +1,47 @@
+name: Patch TR Wine 11.14 native probe readiness
+
+on:
+  push:
+    branches: [tr-wine-11-14-talesrunner-v20]
+    paths:
+      - .github/workflows/tr-wine-11-14-v20-prefix-selfpatch.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-native-probe-readiness:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tr-wine-11-14-talesrunner-v20
+          fetch-depth: 0
+
+      - name: Require WoW64 readiness before stopping wineboot
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tr_wine_compat/apply_wine_11_14_winlator.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''if [ -s \\\"$WINEPREFIX/system.reg\\\" ] && /work/wine-stage/opt/wine/bin/wine cmd /c ver > /work/native-wineboot-readiness.log 2>&1; then ready=1; break; fi;'''
+          new = '''if [ -s \\\"$WINEPREFIX/system.reg\\\" ] && /work/wine-stage/opt/wine/bin/wine cmd /c ver > /work/native-wineboot-readiness.log 2>&1 && /work/wine-stage/opt/wine/bin/wine /work/token-private-namespace-x86.exe > /work/native-wow64-readiness.log 2>&1 && grep -F 'status=00000000 value=0 length=4' /work/native-wow64-readiness.log >/dev/null; then ready=1; break; fi;'''
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected one native readiness anchor, found {count}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          grep -F 'native-wow64-readiness.log' tr_wine_compat/apply_wine_11_14_winlator.py
+          git diff --check
+
+      - name: Commit exact native probe fix
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tr_wine_compat/apply_wine_11_14_winlator.py
+          git commit -m 'ci: wait for WoW64 readiness before ending wineboot'
+          git push origin HEAD:tr-wine-11-14-talesrunner-v20
