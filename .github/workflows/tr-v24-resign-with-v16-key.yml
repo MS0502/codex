@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 jobs:
@@ -17,6 +17,11 @@ jobs:
     timeout-minutes: 20
 
     steps:
+      - name: Check out v16 branch for durable status
+        uses: actions/checkout@v4
+        with:
+          ref: tr-wine-compat-lifetime-v16
+
       - name: Download exact verified v24 artifact
         uses: actions/download-artifact@v4
         with:
@@ -26,7 +31,7 @@ jobs:
           repository: MS0502/codex
           run-id: 30909221403
 
-      - name: Verify exact unsigned-input identity
+      - name: Verify exact v24 input identity
         run: |
           set -euo pipefail
           APK=input-v24/Winlator_11.1_TR_Compat_v24_FORENSIC.apk
@@ -94,3 +99,36 @@ jobs:
           path: out-v24-v16-signer/*
           if-no-files-found: error
           retention-days: 30
+
+      - name: Persist signer gate status
+        if: always()
+        env:
+          CACHE_HIT: ${{ steps.v16-key.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          mkdir -p docs
+          STATUS=FAILED
+          APK_SHA256=none
+          if [ "$CACHE_HIT" != 'true' ]; then
+            STATUS=KEY_MISSING
+          elif [ -f out-v24-v16-signer/Winlator_11.1_TR_Compat_v24_FORENSIC_V16_SIGNER.apk ]; then
+            STATUS=SUCCESS
+            APK_SHA256="$(sha256sum out-v24-v16-signer/Winlator_11.1_TR_Compat_v24_FORENSIC_V16_SIGNER.apk | awk '{print $1}')"
+          fi
+          cat > docs/TR_V24_V16_SIGNER_GATE_STATUS.txt <<EOF
+          status=$STATUS
+          source_v24_run=30909221403
+          source_v24_sha256=b5acda8fa28cf022c2698242f3e5df95b26805c9fc0fe5113a0ff95e2ddab078
+          expected_v16_certificate_sha256=cbe040f0887f8ffb4444b5b62b81f06118a3a9fec608f3c7f6ba7c62824b23ff
+          final_apk_sha256=$APK_SHA256
+          run_id=$GITHUB_RUN_ID
+          run_attempt=$GITHUB_RUN_ATTEMPT
+          EOF
+          sed -i 's/^          //' docs/TR_V24_V16_SIGNER_GATE_STATUS.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/TR_V24_V16_SIGNER_GATE_STATUS.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "Record v24 v16 signer gate status"
+            git push origin HEAD:tr-wine-compat-lifetime-v16
+          fi
