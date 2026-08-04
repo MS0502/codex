@@ -30,6 +30,13 @@ def replace_once(text: str, old: str, new: str, *, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+def replace_first(text: str, old: str, new: str, *, label: str) -> str:
+    count = text.count(old)
+    if count < 1:
+        raise RuntimeError(f"{label}: anchor not found")
+    return text.replace(old, new, 1)
+
+
 def verify_source(root: Path) -> str:
     required = [
         root / "app/build.gradle.kts",
@@ -71,7 +78,7 @@ def patch_gradle(root: Path) -> Path:
         '        buildConfigField("boolean", "TR_DIAGNOSTIC_BUILD", "true")\n',
         label="diagnostic build flag",
     )
-    text = replace_once(
+    text = replace_first(
         text,
         '            signingConfig = signingConfigs.getByName("debug")\n',
         '            signingConfig = signingConfigs.getByName("debug")\n'
