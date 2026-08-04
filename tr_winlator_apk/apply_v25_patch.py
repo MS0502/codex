@@ -174,7 +174,7 @@ def patch_v25(root: Path) -> None:
     if len(box64_archives) != 1:
         raise RuntimeError(f"expected one Box64 archive, found {box64_archives}")
     box64_files, box64_occurrences = patch_tzst(box64_archives[0], "box64-v25")
-    if (box64_files, box64_occurrences) != (1, 1):
+    if (box64_files, box64_occurrences) != (1, 2):
         raise RuntimeError(
             f"unexpected Box64 archive relocation coverage: files={box64_files} occurrences={box64_occurrences}"
         )
