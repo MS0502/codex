@@ -1,0 +1,188 @@
+name: TR GameNative phase 1 baseline
+
+on:
+  pull_request:
+    paths:
+      - "tr_gamenative/**"
+      - "docs/TR_GAMENATIVE_PHASE1.md"
+      - ".github/workflows/tr-gamenative-phase1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-modern-debug:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out migration repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Validate orchestrator patcher
+        run: python -m py_compile tr_gamenative/apply_phase1.py
+
+      - name: Fetch exact GameNative source
+        env:
+          GAMENATIVE_COMMIT: 78e9343e1699fe6eeb1156aab69fb6498fd33083
+        run: |
+          set -euo pipefail
+          git init gamenative
+          git -C gamenative remote add origin https://github.com/utkarshdalal/GameNative.git
+          git -C gamenative fetch --depth 1 origin "$GAMENATIVE_COMMIT"
+          git -C gamenative checkout --detach FETCH_HEAD
+          test "$(git -C gamenative rev-parse HEAD)" = "$GAMENATIVE_COMMIT"
+
+      - name: Apply phase 1 diagnostic patch
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python tr_gamenative/apply_phase1.py \
+            --source-root gamenative \
+            --report out/phase1_patch_report.json
+          git -C gamenative diff --binary > out/gamenative-phase1.patch
+          git -C gamenative diff --name-only | sort > out/changed-files.txt
+
+      - name: Verify patch boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          changed = set(Path("out/changed-files.txt").read_text().splitlines())
+          required = {
+              "app/build.gradle.kts",
+              "app/src/main/java/app/gamenative/PluviaApp.kt",
+              "app/src/main/assets/tr_native_phase1.json",
+              "app/src/test/java/app/gamenative/TrDiagnosticBuildConfigTest.kt",
+          }
+          missing = required - changed
+          if missing:
+              raise SystemExit(f"required phase-1 changes missing: {sorted(missing)}")
+
+          forbidden_fragments = (
+              "talesrunner",
+              "xigncode",
+              "xhunter",
+              ".xem",
+              "ntoskrnl",
+              "winedevice",
+          )
+          forbidden = [
+              path for path in changed
+              if any(fragment in path.lower() for fragment in forbidden_fragments)
+          ]
+          if forbidden:
+              raise SystemExit(f"phase 1 touched forbidden runtime/security paths: {forbidden}")
+          PY
+
+      - name: Inject non-production build properties
+        working-directory: gamenative
+        run: |
+          cat > local.properties <<'EOF'
+          POSTHOG_API_KEY=
+          POSTHOG_HOST=https://us.i.posthog.com
+          STEAMGRIDDB_API_KEY=
+          CLOUD_PROJECT_NUMBER=
+          EOF
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+        with:
+          min-wrapper-count: 1
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run modern debug unit tests
+        working-directory: gamenative
+        run: ./gradlew :app:testModernDebugUnitTest --stacktrace
+
+      - name: Build modern debug APK
+        working-directory: gamenative
+        run: ./gradlew :app:assembleModernDebug --stacktrace
+
+      - name: Verify APK identity and embedded provenance
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import zipfile
+          from pathlib import Path
+
+          apk_candidates = sorted(Path("gamenative/app/build/outputs/apk/modern/debug").glob("*.apk"))
+          if len(apk_candidates) != 1:
+              raise SystemExit(f"expected exactly one modern debug APK, found {apk_candidates}")
+          apk = apk_candidates[0]
+
+          metadata_path = Path("gamenative/app/build/outputs/apk/modern/debug/output-metadata.json")
+          metadata = json.loads(metadata_path.read_text())
+          if metadata.get("applicationId") != "app.gamenative.trdiag":
+              raise SystemExit(f"unexpected applicationId: {metadata.get('applicationId')}")
+
+          with zipfile.ZipFile(apk) as archive:
+              asset_name = "assets/tr_native_phase1.json"
+              if asset_name not in archive.namelist():
+                  raise SystemExit("phase-1 provenance asset is missing from APK")
+              provenance = json.loads(archive.read(asset_name))
+
+          expected = {
+              "phase": 1,
+              "gamenative_commit": "78e9343e1699fe6eeb1156aab69fb6498fd33083",
+              "application_id": "app.gamenative.trdiag",
+              "wine_runtime_changed": False,
+              "talesrunner_changed": False,
+              "xigncode_changed": False,
+          }
+          for key, value in expected.items():
+              if provenance.get(key) != value:
+                  raise SystemExit(f"bad provenance {key}: {provenance.get(key)!r}")
+
+          digest = hashlib.sha256(apk.read_bytes()).hexdigest()
+          out = Path("out")
+          out.mkdir(exist_ok=True)
+          target = out / "TR_NATIVE_PHASE1_MODERN_DEBUG.apk"
+          target.write_bytes(apk.read_bytes())
+          (out / "APK_SHA256.txt").write_text(f"{digest}  {target.name}\n")
+          (out / "apk-verification.json").write_text(
+              json.dumps(
+                  {
+                      "application_id": metadata["applicationId"],
+                      "apk": target.name,
+                      "sha256": digest,
+                      "provenance": provenance,
+                  },
+                  indent=2,
+                  sort_keys=True,
+              ) + "\n"
+          )
+          print(f"APK={target}")
+          print(f"SHA256={digest}")
+          PY
+
+      - name: Upload phase 1 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TR_NATIVE_PHASE1_MODERN_DEBUG
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            out/TR_NATIVE_PHASE1_MODERN_DEBUG.apk
+            out/APK_SHA256.txt
+            out/apk-verification.json
+            out/phase1_patch_report.json
+            out/gamenative-phase1.patch
+            out/changed-files.txt
