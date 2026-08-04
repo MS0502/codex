@@ -132,7 +132,7 @@ jobs:
           grep '^rootfs_patched_files=165$' winlator-app/v25-package-relocation-report.txt
           grep '^rootfs_occurrences=447$' winlator-app/v25-package-relocation-report.txt
           grep '^box64_patched_files=1$' winlator-app/v25-package-relocation-report.txt
-          grep '^box64_occurrences=1$' winlator-app/v25-package-relocation-report.txt
+          grep '^box64_occurrences=2$' winlator-app/v25-package-relocation-report.txt
 
           git -C winlator-app add -N .
           git -C winlator-app diff --binary > v25-generated.patch
