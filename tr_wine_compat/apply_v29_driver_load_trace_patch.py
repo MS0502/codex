@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-REVISION = "v29-generic-driver-load-trace-2"
+REVISION = "v29-generic-driver-load-trace-3"
 
 
 def replace_once(path: Path, old: str, new: str) -> None:
@@ -13,6 +13,38 @@ def replace_once(path: Path, old: str, new: str) -> None:
     if count != 1:
         raise RuntimeError(f"{path}: expected one anchor, found {count}: {old[:160]!r}")
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def replace_once_in_function(path: Path, signature: str, old: str, new: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    signature_count = text.count(signature)
+    if signature_count != 1:
+        raise RuntimeError(f"{path}: expected one function signature, found {signature_count}: {signature!r}")
+
+    start = text.index(signature)
+    opening = text.index("{", start + len(signature))
+    depth = 0
+    end = None
+    for index in range(opening, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+    if end is None:
+        raise RuntimeError(f"{path}: unterminated function: {signature!r}")
+
+    block = text[start:end]
+    anchor_count = block.count(old)
+    if anchor_count != 1:
+        raise RuntimeError(
+            f"{path}: function {signature!r} expected one anchor, found {anchor_count}: {old[:160]!r}"
+        )
+    block = block.replace(old, new, 1)
+    path.write_text(text[:start] + block + text[end:], encoding="utf-8")
 
 
 def patch_ntoskrnl(root: Path) -> None:
@@ -102,17 +134,15 @@ def patch_ntoskrnl(root: Path) -> None:
 ''',
     )
 
-    replace_once(
+    symbolic_signature = "NTSTATUS WINAPI IoCreateSymbolicLink( UNICODE_STRING *name, UNICODE_STRING *target )"
+    replace_once_in_function(
         path,
-        '''NTSTATUS WINAPI IoCreateSymbolicLink( UNICODE_STRING *name, UNICODE_STRING *target )
-{
-    HANDLE handle;
+        symbolic_signature,
+        '''    HANDLE handle;
     OBJECT_ATTRIBUTES attr;
     NTSTATUS ret;
 ''',
-        '''NTSTATUS WINAPI IoCreateSymbolicLink( UNICODE_STRING *name, UNICODE_STRING *target )
-{
-    HANDLE handle;
+        '''    HANDLE handle;
     OBJECT_ATTRIBUTES attr;
     NTSTATUS ret;
 
@@ -121,13 +151,13 @@ def patch_ntoskrnl(root: Path) -> None:
 ''',
     )
 
-    replace_once(
+    replace_once_in_function(
         path,
+        symbolic_signature,
         '''    TRACE( "%s -> %s\\n", debugstr_us(name), debugstr_us(target) );
     if (!(ret = NtCreateSymbolicLinkObject( &handle, SYMBOLIC_LINK_ALL_ACCESS, &attr, target )))
         NtClose( handle );
     return ret;
-}
 ''',
         '''    TRACE( "%s -> %s\\n", debugstr_us(name), debugstr_us(target) );
     if (!(ret = NtCreateSymbolicLinkObject( &handle, SYMBOLIC_LINK_ALL_ACCESS, &attr, target )))
@@ -135,7 +165,6 @@ def patch_ntoskrnl(root: Path) -> None:
     TRACE("DRIVER_LOAD IoCreateSymbolicLink return name=%s target=%s status=%#lx\\n",
           debugstr_us(name), debugstr_us(target), ret);
     return ret;
-}
 ''',
     )
 
