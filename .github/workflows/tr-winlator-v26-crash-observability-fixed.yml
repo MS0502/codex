@@ -92,6 +92,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          # Wine's ntoskrnl.exe is a PE DLL with Windows CUI subsystem 3.
+          # Native-subsystem=true is reserved for the separate .sys driver audit.
+          sed -i 's/"native_subsystem": true/"native_subsystem": false/' ci/build_v29_driver_load_ko.sh
           chmod +x ci/build_v29_driver_load_ko.sh
           ci/build_v29_driver_load_ko.sh
 
