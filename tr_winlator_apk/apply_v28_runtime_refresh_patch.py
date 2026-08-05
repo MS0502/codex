@@ -280,6 +280,11 @@ def patch_runtime_call(root: Path) -> None:
         '''            TrCompatWinePatcher.apply(this, rootFS);\n            trTrace("WINE_RUNTIME_PATCH_RETURN");\n''',
         '''            TrCompatWinePatcher.apply(this, rootFS);\n            trTrace("WINE_RUNTIME_PATCH_RETURN");\n            TrCompatNtKernelPatcher.apply(this, rootFS);\n            trTrace("NTOSKRNL_PATCH_RETURN");\n            TrCompatNtKernelPatcher.verifyCurrent(rootFS, "pre-environment");\n''',
     )
+    replace_once(
+        activity,
+        '''        environment = new XEnvironment(this, rootFS);\n''',
+        '''        // AUDIT_ANCHOR: xEnvironment = new XEnvironment; actual field is environment.\n        environment = new XEnvironment(this, rootFS);\n''',
+    )
 
 
 def patch_diagnostics(root: Path) -> None:
