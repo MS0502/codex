@@ -52,7 +52,7 @@ def main() -> int:
     source = root / "dlls/ntoskrnl.exe/ntoskrnl.c"
     replace_once_in_function(
         source,
-        "NTSTATUS WINAPI ZwLoadDriver( UNICODE_STRING *service_name )",
+        "NTSTATUS WINAPI ZwLoadDriver( const UNICODE_STRING *service_name )",
         "    SERVICE_STATUS_HANDLE service_handle;\n",
         "    SERVICE_STATUS_HANDLE service_handle = NULL;\n",
     )
