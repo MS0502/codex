@@ -4,14 +4,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-REVISION = "v29-generic-driver-load-trace-1"
+REVISION = "v29-generic-driver-load-trace-2"
 
 
 def replace_once(path: Path, old: str, new: str) -> None:
     text = path.read_text(encoding="utf-8")
     count = text.count(old)
     if count != 1:
-        raise RuntimeError(f"{path}: expected one anchor, found {count}: {old[:120]!r}")
+        raise RuntimeError(f"{path}: expected one anchor, found {count}: {old[:160]!r}")
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
@@ -123,27 +123,19 @@ def patch_ntoskrnl(root: Path) -> None:
 
     replace_once(
         path,
-        '''    if (!ret) NtClose( handle );
+        '''    TRACE( "%s -> %s\\n", debugstr_us(name), debugstr_us(target) );
+    if (!(ret = NtCreateSymbolicLinkObject( &handle, SYMBOLIC_LINK_ALL_ACCESS, &attr, target )))
+        NtClose( handle );
     return ret;
 }
 ''',
-        '''    if (!ret) NtClose( handle );
+        '''    TRACE( "%s -> %s\\n", debugstr_us(name), debugstr_us(target) );
+    if (!(ret = NtCreateSymbolicLinkObject( &handle, SYMBOLIC_LINK_ALL_ACCESS, &attr, target )))
+        NtClose( handle );
     TRACE("DRIVER_LOAD IoCreateSymbolicLink return name=%s target=%s status=%#lx\\n",
           debugstr_us(name), debugstr_us(target), ret);
     return ret;
 }
-''',
-    )
-
-    replace_once(
-        path,
-        '''static NTSTATUS open_driver( const UNICODE_STRING *service_name, SC_HANDLE *service )
-{
-    QUERY_SERVICE_CONFIGW *service_config = NULL;
-''',
-        '''static NTSTATUS open_driver( const UNICODE_STRING *service_name, SC_HANDLE *service )
-{
-    QUERY_SERVICE_CONFIGW *service_config = NULL;
 ''',
     )
 
@@ -297,10 +289,8 @@ def main() -> int:
         if marker not in text:
             raise RuntimeError(f"missing marker after patch: {marker}")
 
-    forbidden = ["xhunter", "xigncode", "wellbia", "6d4084", "talesrunner"]
-    lowered = text.lower()
-    for marker in forbidden:
-        if marker in lowered:
+    for marker in ("xhunter", "xigncode", "wellbia", "6d4084", "talesrunner"):
+        if marker in text.lower():
             raise RuntimeError(f"target-specific marker found: {marker}")
 
     print(f"Applied {REVISION}; trace-only, no return-status or buffer behavior changed.")
