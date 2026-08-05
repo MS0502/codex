@@ -4,6 +4,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+PATCH_REVISION = "v27-generic-irp-outcome-1"
+
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
     count = text.count(old)
@@ -175,7 +177,7 @@ def main() -> int:
         return 2
     root = Path(sys.argv[1]).resolve()
     patch(root)
-    print("Applied generic Wine ntoskrnl IRP outcome tracing; no status behavior changed.")
+    print(f"Applied {PATCH_REVISION}; no status behavior changed.")
     return 0
 
 
