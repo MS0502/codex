@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-PATCH_REVISION = "v27-generic-irp-outcome-1"
+PATCH_REVISION = "v27-generic-irp-outcome-2"
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
