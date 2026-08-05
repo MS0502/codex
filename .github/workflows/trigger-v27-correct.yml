@@ -1,0 +1,26 @@
+name: Trigger corrected v27 IRP build
+
+on:
+  push:
+    branches: [tr-winlator-v26-crash-observability]
+    paths:
+      - '.github/workflows/trigger-v27-correct.yml'
+      - 'tr_wine_compat/apply_v27_irp_trace_patch.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch-correct-v27:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Dispatch corrected workflow file
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run tr-winlator-v27-irp-trace.yml \
+            --repo MS0502/codex \
+            --ref tr-winlator-v26-crash-observability
