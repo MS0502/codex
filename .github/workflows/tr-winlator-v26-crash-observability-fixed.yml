@@ -1,19 +1,27 @@
-name: TR Winlator v28 active existing-rootfs IRP trace
+name: TR Winlator v29 registered build
 
 on:
   push:
     branches: [tr-winlator-v26-crash-observability]
     paths:
+      - 'docs/WINE_KERNEL_DRIVER_COMPAT_RESEARCH_2026-08-05.md'
       - 'tr_wine_compat/apply_v27_irp_trace_patch.py'
+      - 'tr_wine_compat/apply_v29_driver_load_trace_patch.py'
+      - 'tr_wine_compat/audit_pe_driver.py'
+      - 'tr_winlator_apk/apply_v26_crash_observability_patch.py'
       - 'tr_winlator_apk/apply_v27_patch.py'
       - 'tr_winlator_apk/apply_v28_runtime_refresh_patch.py'
+      - 'tr_winlator_apk/apply_v29_patch.py'
+      - 'ci/build_v29_driver_load_ko.sh'
       - '.github/workflows/tr-winlator-v26-crash-observability-fixed.yml'
   pull_request:
     branches: [tr-wine-compat-lifetime-v16]
     paths:
-      - 'tr_wine_compat/apply_v27_irp_trace_patch.py'
-      - 'tr_winlator_apk/apply_v27_patch.py'
-      - 'tr_winlator_apk/apply_v28_runtime_refresh_patch.py'
+      - 'docs/WINE_KERNEL_DRIVER_COMPAT_RESEARCH_2026-08-05.md'
+      - 'tr_wine_compat/apply_v29_driver_load_trace_patch.py'
+      - 'tr_wine_compat/audit_pe_driver.py'
+      - 'tr_winlator_apk/apply_v29_patch.py'
+      - 'ci/build_v29_driver_load_ko.sh'
       - '.github/workflows/tr-winlator-v26-crash-observability-fixed.yml'
   workflow_dispatch:
 
@@ -22,13 +30,13 @@ permissions:
   actions: read
 
 concurrency:
-  group: tr-winlator-v28-active-irp-${{ github.ref }}
+  group: tr-winlator-v29-registered-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-v28:
+  build-v29:
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 180
 
     steps:
       - uses: actions/checkout@v4
@@ -36,13 +44,12 @@ jobs:
       - name: Install build and audit dependencies
         run: |
           set -euo pipefail
+          sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            python3 git git-lfs ca-certificates unzip zstd file binutils
-          python3 -m py_compile \
-            tr_wine_compat/apply_v27_irp_trace_patch.py \
-            tr_winlator_apk/apply_v27_patch.py \
-            tr_winlator_apk/apply_v28_runtime_refresh_patch.py
+            build-essential gcc-multilib g++-multilib libc6-dev:i386 \
+            flex bison mingw-w64 pkg-config python3 git git-lfs ca-certificates \
+            unzip zstd file binutils locales
 
       - name: Set up Java 17 for sdkmanager
         uses: actions/setup-java@v4
@@ -68,246 +75,8 @@ jobs:
           distribution: temurin
           java-version: '11'
 
-      - name: Fetch and verify exact validated v27 runtime
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p exact-v27 wine-components-v28
-          gh run download 30995417471 \
-            --repo MS0502/codex \
-            --name WINLATOR_TR_COMPAT_V27_IRP_TRACE_APK \
-            --dir exact-v27
-
-          V27_APK=exact-v27/Winlator_TR_Compat_v27_IRP_TRACE.apk
-          test -s "$V27_APK"
-          test "$(sha256sum "$V27_APK" | cut -d' ' -f1)" = \
-            e757e67983334991d6b06251f30a24004c192750044d3f8bb4238bf20e035ada
-
-          APKSIGNER="$ANDROID_HOME/build-tools/34.0.0/apksigner"
-          "$APKSIGNER" verify --verbose --print-certs "$V27_APK" | tee exact-v27-signature.txt
-          grep 'Verified using v2 scheme (APK Signature Scheme v2): true' exact-v27-signature.txt
-          grep 'Signer #1 certificate SHA-256 digest: 3819847878a333cc204bd93ab89a28a9867c066da5def40401d840fda9f9f017' exact-v27-signature.txt
-
-          unzip -p "$V27_APK" assets/rootfs.tzst > exact-v27-rootfs.tzst
-          test "$(sha256sum exact-v27-rootfs.tzst | cut -d' ' -f1)" = \
-            fd084ca23321b9ae357716f570a8d79143754ae1d182aa5082f2ecf26a87ca9b
-
-          tar --use-compress-program=unzstd -xOf exact-v27-rootfs.tzst \
-            ./opt/wine/lib/wine/x86_64-windows/ntoskrnl.exe \
-            > wine-components-v28/ntoskrnl.exe
-          test "$(sha256sum wine-components-v28/ntoskrnl.exe | cut -d' ' -f1)" = \
-            bac18cca32f701c0315203ab489e2b557b78a2c72cf160256245c6015282c5c8
-          file wine-components-v28/ntoskrnl.exe | tee exact-v27-ntoskrnl-file.txt
-          grep -q 'PE32+ executable' exact-v27-ntoskrnl-file.txt
-          strings wine-components-v28/ntoskrnl.exe | grep -q 'IRP_TRACE begin'
-          strings wine-components-v28/ntoskrnl.exe | grep -q 'IRP_UNHANDLED'
-          ! strings wine-components-v28/ntoskrnl.exe | grep -Eqi 'xhunter|6d4084|wellbia|xigncode'
-
-          cat > exact-v27-runtime-pin.txt <<'EOF'
-          workflow_run=30995417471
-          artifact_id=8926125425
-          apk_sha256=e757e67983334991d6b06251f30a24004c192750044d3f8bb4238bf20e035ada
-          signer_sha256=3819847878a333cc204bd93ab89a28a9867c066da5def40401d840fda9f9f017
-          rootfs_sha256=fd084ca23321b9ae357716f570a8d79143754ae1d182aa5082f2ecf26a87ca9b
-          ntoskrnl_sha256=bac18cca32f701c0315203ab489e2b557b78a2c72cf160256245c6015282c5c8
-          EOF
-
-      - name: Audit tracer source without rebuilding it
-        run: |
-          set -euo pipefail
-          git init wine-src
-          git -C wine-src remote add origin https://github.com/brunodev85/wine-10.10-custom.git
-          git -C wine-src fetch --depth 1 origin 494fb8f4a30fcb9d0b9c00f72a7f2b7a17e787b0
-          git -C wine-src checkout --detach FETCH_HEAD
-          test "$(git -C wine-src rev-parse HEAD)" = 494fb8f4a30fcb9d0b9c00f72a7f2b7a17e787b0
-          python3 tr_wine_compat/apply_v27_irp_trace_patch.py wine-src
-          git -C wine-src diff --check
-          git -C wine-src diff -- dlls/ntoskrnl.exe/ntoskrnl.c | tee v28-wine-source.diff
-          grep -q 'IRP_TRACE begin' wine-src/dlls/ntoskrnl.exe/ntoskrnl.c
-          grep -q 'IRP_UNHANDLED' wine-src/dlls/ntoskrnl.exe/ntoskrnl.c
-          grep -q 'STATUS_INVALID_DEVICE_REQUEST' wine-src/dlls/ntoskrnl.exe/ntoskrnl.c
-          ! grep -Eqi 'xhunter|6d4084|wellbia|xigncode' \
-            wine-src/dlls/ntoskrnl.exe/ntoskrnl.c
-
-      - name: Prepare exact Winlator v16 component baseline
-        run: |
-          set -euo pipefail
-          git init winlator-app
-          git -C winlator-app remote add origin https://github.com/brunodev85/winlator-app.git
-          git -C winlator-app fetch --depth 1 origin c2f4ad4534f4637b543a9a3b085e28f50cf6d01c
-          git -C winlator-app checkout --detach FETCH_HEAD
-          test "$(git -C winlator-app rev-parse HEAD)" = c2f4ad4534f4637b543a9a3b085e28f50cf6d01c
-          git -C winlator-app lfs pull
-
-          ROOTFS=winlator-app/app/src/main/assets/rootfs.tzst
-          test "$(sha256sum "$ROOTFS" | cut -d' ' -f1)" = \
-            27c12533323e0cc0e5f4ddf141a0d567e340cf2740e5aebaefc63b039fd19613
-
-          tar --use-compress-program=unzstd -xOf "$ROOTFS" ./opt/wine/lib/wine/x86_64-unix/ntdll.so > wine-components-v28/ntdll.so
-          tar --use-compress-program=unzstd -xOf "$ROOTFS" ./opt/wine/lib/wine/x86_64-windows/wow64.dll > wine-components-v28/wow64.dll
-          tar --use-compress-program=unzstd -xOf "$ROOTFS" ./opt/wine/bin/wineserver > wine-components-v28/wineserver
-          tar --use-compress-program=unzstd -xOf "$ROOTFS" ./opt/wine/lib/wine/x86_64-unix/nsiproxy.so > wine-components-v28/nsiproxy.so
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import hashlib
-          root = Path('wine-components-v28')
-          old = b'/data/data/com.winlator/files/rootfs'
-          alias = b'/data/user/0/com.winlator.trcompat/r'
-          source = {
-              'ntdll.so':'39f254917b939051ab32fe2df6357acc47b22b39e0c62dce4766e052286bdb0f',
-              'wow64.dll':'2fbdc987de14bf15aa56ac2c3f9f4e4a2034905cc0812ea5d5b83005a69965df',
-              'wineserver':'f91a57493829473f3c08dc4f8976a47646b7df736c352c0359e26f2c1cb9784f',
-              'nsiproxy.so':'bac106d309fd86b3a64b6d55c8b115d618b1629204dd56731e5616401b3e6aad',
-          }
-          final = {
-              'ntdll.so':'d24a6f8c3fcadfb8fda16002dac47ca71304eccc702453c4424c4cfb859cdfad',
-              'wow64.dll':'2fbdc987de14bf15aa56ac2c3f9f4e4a2034905cc0812ea5d5b83005a69965df',
-              'wineserver':'ea66ec3d956bea4b1c4e880352a655dad6036186b3645dc02cd11062386a13cc',
-              'nsiproxy.so':'f747f50334ac75b26d60485ff6ed707d4b310456495374c2b43d219378ac2787',
-          }
-          for name, expected in source.items():
-              path = root / name
-              data = path.read_bytes()
-              if hashlib.sha256(data).hexdigest() != expected:
-                  raise SystemExit(f'{name}: source drift')
-              data = data.replace(old, alias)
-              path.write_bytes(data)
-              if hashlib.sha256(data).hexdigest() != final[name]:
-                  raise SystemExit(f'{name}: final drift')
-          PY
-          chmod 755 wine-components-v28/ntdll.so wine-components-v28/wineserver wine-components-v28/nsiproxy.so
-
-      - name: Reproduce exact v27 source and rootfs
-        run: |
-          set -euo pipefail
-          python3 tr_winlator_apk/apply_v26_crash_observability_patch.py \
-            winlator-app wine-components-v28 2>&1 | tee v28-v26-baseline.log
-          test "$(sha256sum winlator-app/app/src/main/assets/rootfs.tzst | cut -d' ' -f1)" = \
-            5d500065842618bb3ed72858c36ca9807446d8cef085c1394e32d41f7027f60b
-
-          python3 tr_winlator_apk/apply_v27_patch.py \
-            winlator-app wine-components-v28 --already-v26 2>&1 | tee v28-v27-baseline.log
-          test "$(sha256sum winlator-app/app/src/main/assets/rootfs.tzst | cut -d' ' -f1)" = \
-            fd084ca23321b9ae357716f570a8d79143754ae1d182aa5082f2ecf26a87ca9b
-          cmp -s winlator-app/app/src/main/assets/rootfs.tzst exact-v27-rootfs.tzst
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import hashlib, json, stat
-          root = Path('winlator-app')
-          out = {}
-          for path in sorted(root.rglob('*')):
-              if not path.is_file() or path.is_symlink():
-                  continue
-              rel = path.relative_to(root).as_posix()
-              out[rel] = {
-                  'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
-                  'mode': stat.S_IMODE(path.stat().st_mode),
-                  'size': path.stat().st_size,
-              }
-          Path('v27-file-inventory.json').write_text(json.dumps(out, sort_keys=True), encoding='utf-8')
-          PY
-
-      - name: Apply audited v28 existing-rootfs activation
-        run: |
-          set -euo pipefail
-          python3 tr_winlator_apk/apply_v28_runtime_refresh_patch.py \
-            winlator-app wine-components-v28 --already-v27 2>&1 | tee v28-apply.log
-
-          grep -R 'versionName "11.1-trcompat28-irp-trace-active"' -n winlator-app/app/build.gradle
-          grep -R 'TR_DIAG_v28_IRP_TRACE_ACTIVE.zip' -n \
-            winlator-app/app/src/main/java/com/winlator/core/TrCompatDiagnostics.java
-          grep -R 'v28-active-irp-trace-1' -n \
-            winlator-app/app/src/main/java/com/winlator/core/TrCompatNtKernelPatcher.java
-          grep -R 'NTOSKRNL_RUNTIME_VERIFY' -n \
-            winlator-app/app/src/main/java/com/winlator/core/TrCompatNtKernelPatcher.java
-          grep -R 'TrCompatNtKernelPatcher.apply' -n \
-            winlator-app/app/src/main/java/com/winlator/XServerDisplayActivity.java
-          grep -R 'TrCompatNtKernelPatcher.verifyCurrent' -n \
-            winlator-app/app/src/main/java/com/winlator/XServerDisplayActivity.java
-
-      - name: Prove activation order and exact v28 delta
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import hashlib, json, stat
-
-          root = Path('winlator-app')
-          before = json.loads(Path('v27-file-inventory.json').read_text(encoding='utf-8'))
-          after = {}
-          for path in sorted(root.rglob('*')):
-              if not path.is_file() or path.is_symlink():
-                  continue
-              rel = path.relative_to(root).as_posix()
-              after[rel] = {
-                  'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
-                  'mode': stat.S_IMODE(path.stat().st_mode),
-                  'size': path.stat().st_size,
-              }
-
-          added = set(after) - set(before)
-          removed = set(before) - set(after)
-          changed = {p for p in set(before) & set(after) if before[p] != after[p]}
-          expected_added = {
-              'app/src/main/assets/trcompat_wine_v28/ntoskrnl.exe',
-              'app/src/main/java/com/winlator/core/TrCompatNtKernelPatcher.java',
-              'v28-runtime-refresh-report.txt',
-          }
-          expected_changed = {
-              'app/build.gradle',
-              'app/src/main/java/com/winlator/XServerDisplayActivity.java',
-              'app/src/main/java/com/winlator/core/TrCompatDiagnostics.java',
-          }
-          if added != expected_added:
-              raise SystemExit(f'unexpected added files: {sorted(added)}')
-          if removed:
-              raise SystemExit(f'unexpected removed files: {sorted(removed)}')
-          if changed != expected_changed:
-              raise SystemExit(f'unexpected changed files: {sorted(changed)}')
-
-          activity = (root/'app/src/main/java/com/winlator/XServerDisplayActivity.java').read_text(encoding='utf-8')
-          apply_pos = activity.index('TrCompatNtKernelPatcher.apply(this, rootFS)')
-          verify_pos = activity.index('TrCompatNtKernelPatcher.verifyCurrent(rootFS, "pre-environment")')
-          environment_pos = activity.index('xEnvironment = new XEnvironment')
-          if not apply_pos < verify_pos < environment_pos:
-              raise SystemExit('ntoskrnl activation is not before environment start')
-          if activity.count('TrCompatNtKernelPatcher.apply(this, rootFS)') != 1:
-              raise SystemExit('unexpected ntoskrnl apply call count')
-          print('v28 exact source delta and pre-environment order proved')
-          PY
-
-          ROOTFS=winlator-app/app/src/main/assets/rootfs.tzst
-          test "$(sha256sum "$ROOTFS" | cut -d' ' -f1)" = \
-            fd084ca23321b9ae357716f570a8d79143754ae1d182aa5082f2ecf26a87ca9b
-          cmp -s "$ROOTFS" exact-v27-rootfs.tzst
-
-          ASSET=winlator-app/app/src/main/assets/trcompat_wine_v28/ntoskrnl.exe
-          test "$(sha256sum "$ASSET" | cut -d' ' -f1)" = \
-            bac18cca32f701c0315203ab489e2b557b78a2c72cf160256245c6015282c5c8
-          strings "$ASSET" | grep -q 'IRP_TRACE begin'
-          strings "$ASSET" | grep -q 'IRP_UNHANDLED'
-          ! strings "$ASSET" | grep -Eqi 'xhunter|6d4084|wellbia|xigncode'
-          ! grep -Eqi 'xhunter|6d4084|wellbia|xigncode' \
-            winlator-app/app/src/main/java/com/winlator/core/TrCompatNtKernelPatcher.java
-
-          grep -q 'public static final byte LATEST_VERSION = 19;' \
-            winlator-app/app/src/main/java/com/winlator/xenvironment/RootFSInstaller.java
-          grep -q 'public static final byte UPDATE_WINEPREFIX_VERSION = 16;' \
-            winlator-app/app/src/main/java/com/winlator/xenvironment/RootFSInstaller.java
-          grep -q 'rootfs_reinstall_forced=false' winlator-app/v28-runtime-refresh-report.txt
-          grep -q 'container_home_preserved=true' winlator-app/v28-runtime-refresh-report.txt
-
-          BOX64_ARCHIVE="$(find winlator-app/app/src/main/assets/box64 -maxdepth 1 -name 'box64-*.tzst' -print -quit)"
-          test "$(sha256sum "$BOX64_ARCHIVE" | cut -d' ' -f1)" = \
-            38868b2a9bebd1c307161cb4ad2674d1f4af40664dc7f09cbb5ca6505f5745ee
-          test "$(sha256sum winlator-app/app/src/main/jniLibs/arm64-v8a/libtr_box64_exec.so | cut -d' ' -f1)" = \
-            2c6f9846e327dba80a210572d16b1811f6dd041c850e48b2d02b34677e09c421
-
-      - name: Restore exact v26-v27 signing key
-        id: v26-key
+      - name: Restore exact v26-v28 signing key
+        id: signing-key
         uses: actions/cache@v4
         with:
           path: ~/.android/debug.keystore
@@ -316,90 +85,47 @@ jobs:
       - name: Require signer continuity
         run: |
           set -euo pipefail
-          test '${{ steps.v26-key.outputs.cache-hit }}' = 'true'
+          test '${{ steps.signing-key.outputs.cache-hit }}' = 'true'
           test -s "$HOME/.android/debug.keystore"
 
-      - name: Build APK
-        working-directory: winlator-app
+      - name: Build and validate v29
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -o pipefail
-          chmod +x gradlew
-          ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee ../apk-build-v28.log
+          chmod +x ci/build_v29_driver_load_ko.sh
+          ci/build_v29_driver_load_ko.sh
 
-      - name: Verify final APK and update compatibility
-        run: |
-          set -euo pipefail
-          APK=winlator-app/app/build/outputs/apk/debug/app-debug.apk
-          AAPT="$ANDROID_HOME/build-tools/34.0.0/aapt"
-          APKSIGNER="$ANDROID_HOME/build-tools/34.0.0/apksigner"
-          "$AAPT" dump badging "$APK" | tee apk-badging-v28.txt
-          grep "package: name='com.winlator.trcompat'" apk-badging-v28.txt
-          grep "versionName='11.1-trcompat28-irp-trace-active'" apk-badging-v28.txt
-          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee apk-signature-v28.txt
-          grep 'Verified using v2 scheme (APK Signature Scheme v2): true' apk-signature-v28.txt
-          grep 'Signer #1 certificate SHA-256 digest: 3819847878a333cc204bd93ab89a28a9867c066da5def40401d840fda9f9f017' apk-signature-v28.txt
-
-          unzip -p "$APK" assets/rootfs.tzst > embedded-rootfs-v28.tzst
-          test "$(sha256sum embedded-rootfs-v28.tzst | cut -d' ' -f1)" = \
-            fd084ca23321b9ae357716f570a8d79143754ae1d182aa5082f2ecf26a87ca9b
-          cmp -s embedded-rootfs-v28.tzst exact-v27-rootfs.tzst
-
-          unzip -p "$APK" assets/trcompat_wine_v28/ntoskrnl.exe > embedded-v28-ntoskrnl.exe
-          test "$(sha256sum embedded-v28-ntoskrnl.exe | cut -d' ' -f1)" = \
-            bac18cca32f701c0315203ab489e2b557b78a2c72cf160256245c6015282c5c8
-          strings embedded-v28-ntoskrnl.exe | grep -q 'IRP_TRACE begin'
-          strings embedded-v28-ntoskrnl.exe | grep -q 'IRP_UNHANDLED'
-          ! strings embedded-v28-ntoskrnl.exe | grep -Eqi 'xhunter|6d4084|wellbia|xigncode'
-
-          unzip -p "$APK" classes.dex | strings | grep -q 'NTOSKRNL_PATCH_REPLACED'
-          unzip -p "$APK" classes.dex | strings | grep -q 'NTOSKRNL_RUNTIME_VERIFY'
-          unzip -p "$APK" classes.dex | strings | grep -q 'TR_DIAG_v28_IRP_TRACE_ACTIVE.zip'
-          sha256sum "$APK" embedded-rootfs-v28.tzst embedded-v28-ntoskrnl.exe | tee final-sha256-v28.txt
-
-      - name: Upload build and audit diagnostics
+      - name: Upload build audit
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: WINLATOR_TR_COMPAT_V28_ACTIVE_IRP_BUILD_LOG
+          name: WINLATOR_TR_COMPAT_V29_DRIVER_LOAD_KO_BUILD_LOG
           path: |
-            exact-v27-runtime-pin.txt
-            exact-v27-signature.txt
-            exact-v27-ntoskrnl-file.txt
-            v28-wine-source.diff
-            v28-v26-baseline.log
-            v28-v27-baseline.log
-            v27-file-inventory.json
-            v28-apply.log
-            winlator-app/v27-irp-component-report.txt
-            winlator-app/v28-runtime-refresh-report.txt
-            apk-build-v28.log
-            apk-badging-v28.txt
-            apk-signature-v28.txt
-            final-sha256-v28.txt
+            localedef-version.txt
+            rootfs-glibc-version.txt
+            exact-v28-signature.txt
+            v29-wine-source.diff
+            v29-wine-build.log
+            v29-ntoskrnl-file.txt
+            v29-ntoskrnl-sha256.txt
+            v29-ntoskrnl-pe-audit.json
+            v29-v26-baseline.log
+            v29-v27-baseline.log
+            v29-v28-baseline.log
+            v28-source-inventory.json
+            v29-apply.log
+            winlator-app/v29-driver-load-ko-report.txt
+            apk-build-v29.log
+            apk-badging-v29.txt
+            apk-signature-v29.txt
+            final-sha256-v29.txt
           if-no-files-found: warn
           retention-days: 30
-
-      - name: Collect APK
-        run: |
-          set -euo pipefail
-          mkdir -p out-v28
-          cp winlator-app/app/build/outputs/apk/debug/app-debug.apk \
-            out-v28/Winlator_TR_Compat_v28_ACTIVE_IRP_TRACE.apk
-          sha256sum out-v28/Winlator_TR_Compat_v28_ACTIVE_IRP_TRACE.apk > out-v28/SHA256SUMS.txt
-          cat > out-v28/README_KO.txt <<'EOF'
-          v28은 v27 업데이트에서 기존 app-private rootfs가 재사용된 누락을 수정한다.
-          컨테이너와 Wine prefix는 삭제하거나 재생성하지 않는다.
-          검증된 v27 APK의 정확한 ntoskrnl.exe만 asset으로 사용한다.
-          기존 v26 ntoskrnl 정확한 해시만 허용하고, 검증된 백업 후 원자 교체한 뒤 재검증한다.
-          알 수 없는 바이너리이면 교체하지 않고 실패 종료한다.
-          게임, 인증, XIGNCODE, 장치, 서비스, IOCTL 결과는 변경하거나 위조하지 않는다.
-          실행 후 Documents/Winlator/TR_DIAG_v28_IRP_TRACE_ACTIVE.zip을 수집한다.
-          EOF
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: WINLATOR_TR_COMPAT_V28_ACTIVE_IRP_TRACE_APK
-          path: out-v28/*
+          name: WINLATOR_TR_COMPAT_V29_DRIVER_LOAD_KO_APK
+          path: out-v29/*
           if-no-files-found: error
           retention-days: 30
