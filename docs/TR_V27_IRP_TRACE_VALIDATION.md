@@ -6,7 +6,7 @@ The v27 diagnostic APK built and passed all registered gates. This is an observa
 
 ## Exact inputs
 
-- branch head: `999d0a69f272cfc495b3e16ff1ea60c21c4b45dd`
+- validated branch head: `999d0a69f272cfc495b3e16ff1ea60c21c4b45dd`
 - workflow run: `30995417471`
 - upstream Winlator: `c2f4ad4534f4637b543a9a3b085e28f50cf6d01c`
 - Wine source: `brunodev85/wine-10.10-custom@494fb8f4a30fcb9d0b9c00f72a7f2b7a17e787b0`
