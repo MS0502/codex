@@ -7,6 +7,14 @@ on:
       - 'tr_wine_compat/apply_v27_irp_trace_patch.py'
       - 'tr_winlator_apk/apply_v27_patch.py'
       - '.github/workflows/tr-winlator-v27-irp-trace.yml'
+      - '.github/workflows/tr-winlator-v26-crash-observability-fixed.yml'
+  pull_request:
+    branches: [tr-wine-compat-lifetime-v16]
+    paths:
+      - 'tr_wine_compat/apply_v27_irp_trace_patch.py'
+      - 'tr_winlator_apk/apply_v27_patch.py'
+      - '.github/workflows/tr-winlator-v27-irp-trace.yml'
+      - '.github/workflows/tr-winlator-v26-crash-observability-fixed.yml'
   workflow_dispatch:
 
 permissions:
@@ -145,7 +153,7 @@ jobs:
           final = {
               'ntdll.so':'d24a6f8c3fcadfb8fda16002dac47ca71304eccc702453c4424c4cfb859cdfad',
               'wow64.dll':'2fbdc987de14bf15aa56ac2c3f9f4e4a2034905cc0812ea5d5b83005a69965df',
-              'wineserver':'ea66ec3d956bea4b1c4e880352a655dad6036186b3645dc02cd11062386a13cc',
+              'wineserv':'ea66ec3d956bea4b1c4e880352a655dad6036186b3645dc02cd11062386a13cc',
               'nsiproxy.so':'f747f50334ac75b26d60485ff6ed707d4b310456495374c2b43d219378ac2787',
           }
           for name, expected in source.items():
@@ -172,7 +180,7 @@ jobs:
             winlator-app/app/src/main/java/com/winlator/core/TrCompatDiagnostics.java
           grep -R 'wellbia_strings_sanitized.txt' -n \
             winlator-app/app/src/main/java/com/winlator/core/TrCompatDiagnostics.java
-          ! grep -R 'trforens' -n winlator-app/app
+          ! grep -R 'trforens' -n winlator-app
 
       - name: Prove v27 runtime delta is only ntoskrnl
         run: |
