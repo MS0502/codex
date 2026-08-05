@@ -7,11 +7,13 @@ on:
       - 'docs/WINE_KERNEL_DRIVER_COMPAT_RESEARCH_2026-08-05.md'
       - 'tr_wine_compat/apply_v27_irp_trace_patch.py'
       - 'tr_wine_compat/apply_v29_driver_load_trace_patch.py'
+      - 'tr_wine_compat/apply_v29_driver_load_trace_patch_v4.py'
       - 'tr_wine_compat/audit_pe_driver.py'
       - 'tr_winlator_apk/apply_v26_crash_observability_patch.py'
       - 'tr_winlator_apk/apply_v27_patch.py'
       - 'tr_winlator_apk/apply_v28_runtime_refresh_patch.py'
       - 'tr_winlator_apk/apply_v29_patch.py'
+      - 'tr_winlator_apk/apply_v29_patch_v2.py'
       - 'ci/build_v29_driver_load_ko.sh'
       - '.github/workflows/tr-winlator-v26-crash-observability-fixed.yml'
   pull_request:
@@ -19,8 +21,10 @@ on:
     paths:
       - 'docs/WINE_KERNEL_DRIVER_COMPAT_RESEARCH_2026-08-05.md'
       - 'tr_wine_compat/apply_v29_driver_load_trace_patch.py'
+      - 'tr_wine_compat/apply_v29_driver_load_trace_patch_v4.py'
       - 'tr_wine_compat/audit_pe_driver.py'
       - 'tr_winlator_apk/apply_v29_patch.py'
+      - 'tr_winlator_apk/apply_v29_patch_v2.py'
       - 'ci/build_v29_driver_load_ko.sh'
       - '.github/workflows/tr-winlator-v26-crash-observability-fixed.yml'
   workflow_dispatch:
@@ -93,9 +97,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          python3 -m py_compile \
+            tr_wine_compat/apply_v29_driver_load_trace_patch_v4.py \
+            tr_winlator_apk/apply_v29_patch_v2.py
           # Wine's ntoskrnl.exe is a PE DLL with Windows CUI subsystem 3.
-          # Native-subsystem=true is reserved for the separate .sys driver audit.
+          # Native-subsystem=true is reserved for separate .sys driver audits.
           sed -i 's/"native_subsystem": true/"native_subsystem": false/' ci/build_v29_driver_load_ko.sh
+          sed -i 's#tr_wine_compat/apply_v29_driver_load_trace_patch.py#tr_wine_compat/apply_v29_driver_load_trace_patch_v4.py#g' ci/build_v29_driver_load_ko.sh
+          sed -i 's#tr_winlator_apk/apply_v29_patch.py#tr_winlator_apk/apply_v29_patch_v2.py#g' ci/build_v29_driver_load_ko.sh
           chmod +x ci/build_v29_driver_load_ko.sh
           ci/build_v29_driver_load_ko.sh
 
