@@ -1,0 +1,17 @@
+name: TR Winlator v29 manual verification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  note:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Registered validation pointer
+        run: |
+          echo 'The canonical v29 build is registered workflow run 31006499944.'
+          echo 'Use .github/workflows/tr-winlator-v26-crash-observability-fixed.yml for future validated builds.'

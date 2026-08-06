@@ -1,0 +1,150 @@
+name: TR Winlator v30 registered build
+
+on:
+  push:
+    branches: [tr-winlator-v26-crash-observability]
+    paths:
+      - 'docs/TR_XIGNCODE_STATIC_BOUNDARY_2026-08-06.md'
+      - 'docs/WINE_KERNEL_DRIVER_COMPAT_RESEARCH_2026-08-05.md'
+      - 'tr_wine_compat/apply_v27_irp_trace_patch.py'
+      - 'tr_wine_compat/apply_v29_driver_load_trace_patch.py'
+      - 'tr_wine_compat/apply_v29_driver_load_trace_patch_v4.py'
+      - 'tr_wine_compat/audit_pe_driver.py'
+      - 'tr_winlator_apk/apply_v26_crash_observability_patch.py'
+      - 'tr_winlator_apk/apply_v27_patch.py'
+      - 'tr_winlator_apk/apply_v28_runtime_refresh_patch.py'
+      - 'tr_winlator_apk/apply_v29_patch.py'
+      - 'tr_winlator_apk/apply_v29_patch_v2.py'
+      - 'tr_winlator_apk/apply_v30_boundary_font_patch.py'
+      - 'ci/build_v29_driver_load_ko.sh'
+      - 'ci/build_v30_x3_boundary_font.sh'
+      - '.github/workflows/tr-winlator-v26-crash-observability-fixed.yml'
+  pull_request:
+    branches: [tr-wine-compat-lifetime-v16]
+    paths:
+      - 'docs/TR_XIGNCODE_STATIC_BOUNDARY_2026-08-06.md'
+      - 'tr_winlator_apk/apply_v30_boundary_font_patch.py'
+      - 'ci/build_v30_x3_boundary_font.sh'
+      - '.github/workflows/tr-winlator-v26-crash-observability-fixed.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tr-winlator-v30-registered-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-v30:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build and audit dependencies
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential gcc-multilib g++-multilib libc6-dev:i386 \
+            flex bison mingw-w64 pkg-config python3 git git-lfs ca-certificates \
+            unzip zstd file binutils locales
+
+      - name: Set up Java 17 for sdkmanager
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK components
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platforms;android-34' 'build-tools;34.0.0' \
+            'cmake;3.22.1' 'ndk;24.0.8215888'
+
+      - name: Set up Java 11 for Android Gradle Plugin
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Restore exact v26-v29 signing key
+        id: signing-key
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: trcompat-v26-crash-observability-keystore-v1
+
+      - name: Require signer continuity
+        run: |
+          set -euo pipefail
+          test '${{ steps.signing-key.outputs.cache-hit }}' = 'true'
+          test -s "$HOME/.android/debug.keystore"
+
+      - name: Build and validate v30
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            tr_wine_compat/apply_v29_driver_load_trace_patch_v4.py \
+            tr_winlator_apk/apply_v29_patch_v2.py \
+            tr_winlator_apk/apply_v30_boundary_font_patch.py
+          # Preserve the exact corrections used by validated v29.
+          sed -i 's/"native_subsystem": true/"native_subsystem": false/' ci/build_v29_driver_load_ko.sh
+          sed -i 's#tr_wine_compat/apply_v29_driver_load_trace_patch.py#tr_wine_compat/apply_v29_driver_load_trace_patch_v4.py#g' ci/build_v29_driver_load_ko.sh
+          sed -i 's#tr_winlator_apk/apply_v29_patch.py#tr_winlator_apk/apply_v29_patch_v2.py#g' ci/build_v29_driver_load_ko.sh
+          chmod +x ci/build_v29_driver_load_ko.sh ci/build_v30_x3_boundary_font.sh
+          ci/build_v30_x3_boundary_font.sh
+
+      - name: Upload build audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_TR_COMPAT_V30_X3_BOUNDARY_FONT_BUILD_LOG
+          path: |
+            localedef-version.txt
+            rootfs-glibc-version.txt
+            exact-v28-signature.txt
+            v29-wine-source.diff
+            v29-wine-build.log
+            v29-ntoskrnl-file.txt
+            v29-ntoskrnl-sha256.txt
+            v29-ntoskrnl-pe-audit.json
+            v29-v26-baseline.log
+            v29-v27-baseline.log
+            v29-v28-baseline.log
+            v28-source-inventory.json
+            v29-apply.log
+            v29-source-inventory-for-v30.json
+            v30-apply.log
+            winlator-app/v29-driver-load-ko-report.txt
+            winlator-app/v30-x3-boundary-font-report.txt
+            apk-build-v29.log
+            apk-build-v30.log
+            apk-badging-v29.txt
+            apk-badging-v30.txt
+            apk-signature-v29.txt
+            apk-signature-v30.txt
+            final-sha256-v29.txt
+            final-sha256-v30.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WINLATOR_TR_COMPAT_V30_X3_BOUNDARY_FONT_APK
+          path: out-v30/*
+          if-no-files-found: error
+          retention-days: 30
